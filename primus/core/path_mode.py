@@ -74,6 +74,11 @@ _CREATE_DIR_RE = re.compile(
     r"^\s*create\s+(~(?:/[\w./-]*)?|/[\w./-]+|[\w.-]+(?:/[\w.-]+)*)\s*$",
     re.I,
 )
+# create|write|put PATH with a file suffix and no `with` text → write_file (empty body).
+_CREATE_FILE_RE = re.compile(
+    rf"^\s*(?:create|write|put)\s+({_PATH_TOKEN})\s*$",
+    re.I,
+)
 _FILE_SUFFIX_RE = re.compile(r"\.[A-Za-z0-9]{1,12}$")
 _DELETE_RE = re.compile(r"^\s*(?:delete|remove|rm)\s+(.+?)\s*$", re.I)
 _SEND_MAIL_RE = re.compile(r"\bsend\b.*\b(?:e-?mails?|mail)\b|\b(?:e-?mails?|mail)\b.*\bsend\b", re.I)
@@ -167,12 +172,34 @@ def is_create_dir_step(step: str) -> bool:
     return not _has_file_suffix(m.group(1))
 
 
+def is_create_file_step(step: str) -> bool:
+    """create|write|put PATH with a file suffix and no ``with`` text → write_file."""
+    m = _CREATE_FILE_RE.match((step or "").strip())
+    if not m:
+        return False
+    return _has_file_suffix(m.group(1))
+
+
+def is_list_step(step: str) -> bool:
+    """Bare list/ls (not 'show battery')."""
+    return bool(re.match(r"^\s*(?:list|ls)\b", (step or "").strip(), re.I))
+
+
 def has_file_write_steps(steps: list[str]) -> bool:
     """True when any step is a real write_file / create_directory mapping."""
     for step in steps or []:
-        if is_write_with_step(step) or is_create_dir_step(step) or _WRITE_RE.match(step):
+        if (
+            is_write_with_step(step)
+            or is_create_dir_step(step)
+            or is_create_file_step(step)
+            or _WRITE_RE.match(step)
+        ):
             return True
     return False
+
+
+def has_list_steps(steps: list[str]) -> bool:
+    return any(is_list_step(s) for s in (steps or []))
 
 
 def inspect_path_message(message: str) -> PathInspect:
@@ -366,6 +393,8 @@ def _listing_inventory(listing: str, path: str = "") -> str:
         shown = f"{shown}, and {leftover} more"
     where = f" in `{path}`" if path else ""
     nf, nd = len(files), len(dirs)
+    if nf == 0 and nd == 0:
+        return f"0 files, 0 folders{where}."
     return (
         f"{nf} file{'s' if nf != 1 else ''}, "
         f"{nd} folder{'s' if nd != 1 else ''}{where}. "
@@ -387,7 +416,11 @@ def _run_list(step: str, ctx: _RunCtx, reg: Any) -> str:
         ctx.last_listing = listing
         ctx.last_files = []
         return listing
-    if (not listing.strip()) or listing.startswith("No matches"):
+    if (
+        (not listing.strip())
+        or listing.startswith("No matches")
+        or listing.startswith("0 files, 0 folders")
+    ):
         ctx.last_listing = ""
         ctx.last_files = []
         return _listing_inventory("", target)
@@ -535,6 +568,9 @@ def run_user_path(
             out = _invoke(reg.read_file, path=path.split()[0] if path else path)
         elif is_write_with_step(step) or _WRITE_RE.match(step):
             out = _run_write(step, ctx, reg)
+        elif is_create_file_step(step):
+            dest = _CREATE_FILE_RE.match(step).group(1).strip()
+            out = _invoke(reg.write_file, path=dest.split()[0], content="")
         elif is_create_dir_step(step):
             out = _run_create_dir(step, reg)
         elif _DELETE_RE.match(step) or re.search(r"\bdelete\b.*\bdraft\b", low):
@@ -548,7 +584,10 @@ def run_user_path(
         ctx.outputs.append(out)
         parts.append(out)
         if out.startswith("✗") and (
-            is_write_with_step(step) or _WRITE_RE.match(step) or is_create_dir_step(step)
+            is_write_with_step(step)
+            or _WRITE_RE.match(step)
+            or is_create_file_step(step)
+            or is_create_dir_step(step)
         ):
             break
     return "\n\n".join(parts)

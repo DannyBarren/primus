@@ -107,10 +107,10 @@ edges at `:2547` and `:2552`; `summarize → END` `:2557`; `single_step → END`
 | last email from NAME + summarize | Same fast path. `_fast_mail_answer` adds `from:NAME` only when NAME is a person; summarize triggers `_summarize_mail` `:408` at `:478`. | **no** |
 | count folders in ~ | `fast_tool_answer` count branch `:574-593` → `list_directory`, counts `[dir]` lines. `_ft_count_target` `:482` maps "home" → `~`. | **no** |
 | tell me about X / what is X | `route_prompt` knowledge branch `:2943-2957` (`_KNOWLEDGE_Q_RE`) → `_fast_chat_answer(prefer_main=True)` with a `max(45, fast_chat_invoke_timeout_sec)` leash `:4105-4111`. Vetoed by `_KNOWLEDGE_TOOL_VETO_RE` (news/mail/folders/weather/time). Receptionist never called. | **no** |
-| file write / move / read | `create\|write\|put PATH with TEXT` is its own in-process `write_file` step (`path_mode.py` `_WRITE_WITH_RE` / `_run_write` `:463`); two destinations are never merged (`parse_user_path` `:136` + `_split_write_destinations` `:115`). `create DIR` with no `with` text and no file suffix is `create_directory` (`is_create_dir_step` `:162`). Bare write (no `my path:`) still sets `run_as_user` via `has_file_write_steps` (`system.py` `:3904`) and calls `write_file` **before** leftover chat. Reply is `✓ Wrote` / `[Suggest]` / `✗` from the real tool — never `All taken care of` when a listed write did not run (`:4272`). Move/read without that shape still go through the files pack. Bare `list` / `ls` can take `path=direct`. Empty path-mode list is `0 files, 0 folders in path` (`_run_list` `:377`), not `No matches` twice. | **no** for write/create-dir; **yes** (typical) for other file verbs |
+| file write / move / read | `create\|write\|put PATH with TEXT` is its own in-process `write_file` step (`path_mode.py` `_WRITE_WITH_RE` / `_run_write` `:496`); two destinations are never merged (`parse_user_path` `:141` + `_split_write_destinations` `:120`). `create PATH` with a file suffix and no `with` text is also `write_file` (`is_create_file_step` `:175`) so `create A then create B` runs both. `create DIR` with no `with` text and no file suffix is `create_directory` (`is_create_dir_step` `:167`). Bare write (no `my path:`) still sets `run_as_user` via `has_file_write_steps` (`system.py` `:3932`) and calls `write_file` **before** leftover chat. Reply is `✓ Wrote` / `[Suggest]` / `✗` from the real tool — never `All taken care of` when a listed write did not run (`:4301`). Bare `list` / `ls` is `has_list_steps` `:3933` plus a single-list fast-tool after the multi-step gate (`:609`). `list_directory` empty return is `0 files, 0 folders in path` (`registry.py` `:697`); summarize uses the same inventory (`_listing_inventory` `:369`) and does not say `No matches`. | **no** for write/create-dir/list; **yes** (typical) for other file verbs |
 | `my path:` | `inspect_path_message` `:3839` sets `run_as_user`; `_run_user_path_with_packs` `:3933` runs steps in the operator's order. In-process steps batch into `run_user_path`; others bind their own pack per step. After a `[dir]`/`[file]` listing (or an empty dir), `summarize` is a short inventory (file/dir counts, top extensions, 5 names + N more) — not a reprint. Listings shown in chat are capped at ~20 lines. | mixed (only for steps that need an agent) |
 | leftover / mixed | Default `route_prompt` return `:2989-2992` → `path=primus`, `needs_rag=True`, `no_plan=False`. Then `receive_leftover` `:3981`, then the plan→execute graph. Listed `write\|create\|put PATH with TEXT` never reaches this path. | **yes** |
-| why did you do that / explain your reasoning | `is_why_ask` (`audit.py` `_WHY_RE`) also matches explain your reasoning/process, walk me through, how did you do that, what did you just do. `explain_recent()` `:3847-3854`. English from `audit.jsonl`. No graph, no tools, no re-run. Operator-claim openers ("Danny Barren here") are stripped. Not a `@tool`; does not steal `/good` `/bad`. | **no** |
+| why did you do that / explain your reasoning | `is_why_ask` (`audit.py` `_WHY_RE`) also matches explain your reasoning/process, walk me through, how did you do that, what did you just do. Route unchanged: `explain_recent()` `:293` from `system.py` `:3847-3854`. One English bullet per action (`Pulled today's headlines`, `Wrote path`) via `_TOOL_ENGLISH` `:87` — no Started/Finished, no coffee persona, no re-run. Operator-claim openers ("Danny Barren here") are stripped. Not a `@tool`; does not steal `/good` `/bad`. | **no** |
 | forge / code | `ModelRouter.analyze` → `agent_id="forge"`; small self-contained → `fast_coding` (`_is_fast_coding` `:2904`), else the Forge graph `:2961-2972`. | **no** if `fast_coding`, else **yes** |
 | `ask_grok` | Never a route. It is a registered tool that only enters a turn's pack when the receptionist says `need_brain` / `heavy` `:3980-3990`, or when the message itself names it. Fast winners return long before that point. | **yes** (leftover graph only) |
 
@@ -125,7 +125,7 @@ edges at `:2547` and `:2552`; `summarize → END` `:2557`; `single_step → END`
 4. `skip_fast` `:3859` — the only fast-tier suppressor, and only for `my path:` prefix / toggle-with-steps / multi-step `user_path`.
 5. `instant_answer` `:3868`.
 6. `fast_tool_answer` `:3880` (wrapped; an exception falls through to full routing).
-7. path-mode toggles answer inline `:3892-3911`; a listed path **or** any `has_file_write_steps` message (bare `write ~/… with …` included) runs `_run_user_path_with_packs` `:3933` **before** leftover, and a trailing `extra_ask` re-enters instant `:3937` → fast-tool `:3942` → knowledge → `invoke_primus`.
+7. path-mode toggles answer inline `:3892-3911`; a listed path **or** any `has_file_write_steps` / `has_list_steps` message (bare `write ~/… with …` or `list ~/…` included) runs `_run_user_path_with_packs` **before** leftover, and a trailing `extra_ask` re-enters instant → fast-tool → knowledge → `invoke_primus`.
 8. `HAS_AI_STACK` `:3919`, then `check_ollama_health` `:3923`.
 9. `ModelRouter.analyze` `:3934`; Forge availability fallback `:3945-3958`.
 10. `route_prompt` `:3966`.
@@ -417,14 +417,14 @@ pack manifest file (packs are code in `tool_packs.py`), and any quarantine direc
   sender), with HTML stripped `:430`, `:408`
 - Knowledge / "tell me about X" on the main model with a ~45s leash, no planner
 - Pulse hello / identity; why-ask (including "explain your reasoning and process") in English
-  from `audit.jsonl` — no graph, no re-run
+  from `audit.jsonl` — one bullet per action, no Started/Finished, no graph, no re-run
 - `my path:` executes the operator's order, switching packs per step `:3721-3768`; summarize
   after a listing is counts + 5 names, not a second dump. Empty list → `0 files, 0 folders`
-  (`path_mode.py` `:377`), not `No matches` twice
+  (`list_directory` `:697` and `_run_list` `:406`), not `No matches`
 - `create\|write\|put PATH with TEXT` → real `write_file` per destination, including a bare
-  write with no `my path:` (`has_file_write_steps` `system.py` `:3904`). `create DIR` (no
-  `with`, no suffix) → `create_directory`. Suggest previews; Execute writes. `✗` is shown
-  and success is not claimed
+  write with no `my path:` (`has_file_write_steps` `system.py` `:3932`). `create FILE` (suffix,
+  no `with`) → `write_file` so two creates both run. `create DIR` (no `with`, no suffix) →
+  `create_directory`. Suggest previews; Execute writes. `✗` is shown and success is not claimed
 - Suggest previews `create_directory` and queues `rm`; Execute applies
 - Fixture Gmail list/read/status with no token
 - Leftover receptionist → pack selection → optional `ask_grok` under the governor

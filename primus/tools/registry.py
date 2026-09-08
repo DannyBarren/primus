@@ -694,7 +694,7 @@ def list_directory(path: str = "~", pattern: str = "*") -> str:
         return err
     entries = sorted(target.glob(pattern))[:200]
     if not entries:
-        return f"No matches in {target}"
+        return f"0 files, 0 folders in `{target}`"
     return "\n".join(
         f"[{'dir' if e.is_dir() else 'file'}] {e.name} ({e.stat().st_size if e.is_file() else 0} B)"
         for e in entries

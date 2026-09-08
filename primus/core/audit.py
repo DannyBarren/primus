@@ -68,22 +68,43 @@ _DROP_ARG_KEYS = frozenset({
 })
 
 _ACTION_ENGLISH = {
-    "tool_start": "started",
-    "tool_end": "finished",
-    "queued": "queued",
-    "executed": "executed",
-    "ask_grok_cap": "stopped ask_grok at a budget cap",
-    "ask_grok_loop": "broke an ask_grok loop",
-    "vault_resolve": "resolved a vault id",
-    "export": "exported a backup zip",
-    "import": "imported a backup zip",
-    "write": "wrote",
-    "append": "appended",
-    "overwrite": "overwrote",
-    "mkdir": "created a directory",
-    "move": "moved",
-    "copy": "copied",
+    "queued": "Queued a command for approval — not executed",
+    "executed": "Executed a command",
+    "ask_grok_cap": "Stopped ask_grok at a budget cap",
+    "ask_grok_loop": "Broke an ask_grok loop",
+    "vault_resolve": "Resolved a vault id",
+    "export": "Exported a backup zip",
+    "import": "Imported a backup zip",
+    "write": "Wrote",
+    "append": "Appended",
+    "overwrite": "Overwrote",
+    "mkdir": "Created a directory",
+    "move": "Moved",
+    "copy": "Copied",
 }
+
+# One English line per tool. No Started/Finished. No coffee persona.
+_TOOL_ENGLISH = {
+    "get_news": "Pulled today's headlines",
+    "get_datetime": "Checked the date and time",
+    "get_weather": "Checked the weather",
+    "list_directory": "Listed {path}",
+    "write_file": "Wrote {path}",
+    "create_directory": "Created a directory",
+    "read_file": "Read {path}",
+    "delete_file": "Queued a delete of {path}",
+    "move_path": "Moved a path",
+    "copy_path": "Copied a path",
+    "gmail_list_messages": "Checked the inbox",
+    "gmail_read_message": "Read a message",
+    "gmail_list_labels": "Listed mail labels",
+}
+
+_PATH_IN_DETAIL = re.compile(
+    r"path=(\S+)"
+    r"|`([^`]+)`"
+    r"|((?:~|/|\.)[\w./-]+)",
+)
 
 
 def _audit_path():
@@ -192,19 +213,62 @@ def read_recent(limit: int = _RECENT_DEFAULT) -> list[dict[str, Any]]:
         return []
 
 
-def _english(rec: dict[str, Any]) -> str:
+def _path_from_detail(detail: str) -> str:
+    text = (detail or "").strip()
+    m = _PATH_IN_DETAIL.search(text)
+    if not m:
+        return ""
+    return _norm_path(m.group(1) or m.group(2) or m.group(3) or "")
+
+
+def _norm_path(path: str) -> str:
+    raw = (path or "").strip().strip("`").rstrip(".,;:")
+    if not raw:
+        return ""
+    try:
+        from pathlib import Path  # noqa: PLC0415
+
+        p = Path(raw).expanduser()
+        home = Path.home().resolve()
+        resolved = p.resolve() if p.exists() else Path(str(p.expanduser()))
+        try:
+            rel = resolved.relative_to(home)
+            return f"~/{rel.as_posix()}"
+        except ValueError:
+            return str(resolved)
+    except Exception:
+        return raw
+
+
+def _tool_name(detail: str) -> str:
+    token = (detail or "").strip().split()[0] if detail else ""
+    return token.split("=", 1)[0]
+
+
+def _tool_line(name: str, detail: str) -> str:
+    path = _path_from_detail(detail)
+    tmpl = _TOOL_ENGLISH.get(name or "")
+    if tmpl:
+        line = tmpl.format(path=path or "a path")
+        return line if line.endswith(".") else f"{line}."
+    if path:
+        return f"Used {name} on {path}."
+    return f"Used {name}." if name else ""
+
+
+def _english(rec: dict[str, Any], *, start_detail: str = "") -> str:
+    """One English sentence. Never Started/Finished."""
     action = str(rec.get("action") or "").strip()
     detail = _safe_detail(rec.get("detail") or "")
-    ok = rec.get("ok", True)
+    if action == "tool_start":
+        return ""
+    if action == "tool_end":
+        name = _tool_name(detail)
+        return _tool_line(name, start_detail or detail)
     if action == "queued":
         return f"Queued {detail or 'a command'} for approval — not executed."
     if action == "executed":
         return f"Executed {detail or 'a command'}."
-    if action == "tool_start":
-        return f"Started {detail or 'a tool'}."
-    if action == "tool_end":
-        verb = "Finished" if ok else "Failed"
-        return f"{verb} {detail or 'a tool'}."
     if action == "ask_grok_cap":
         return f"Stopped ask_grok at a budget cap{f' ({detail})' if detail else ''}."
     if action == "ask_grok_loop":
@@ -215,10 +279,22 @@ def _english(rec: dict[str, Any]) -> str:
         return f"Exported a backup zip{f' ({detail})' if detail else ''}."
     if action == "import":
         return f"Imported a backup zip{f' ({detail})' if detail else ''}."
+    if action in ("write", "append", "overwrite"):
+        path = _path_from_detail(detail) or _norm_path(detail.split(":", 1)[0].strip())
+        return f"Wrote {path}." if path else "Wrote a file."
+    if action == "mkdir":
+        path = _path_from_detail(detail) or _norm_path(detail.split(":", 1)[0].strip())
+        return f"Created {path}." if path else "Created a directory."
+    if action in ("move", "copy"):
+        label = "Moved" if action == "move" else "Copied"
+        path = _path_from_detail(detail) or _norm_path(detail.split(":", 1)[0].strip())
+        return f"{label} {path}." if path else f"{label} a path."
     label = _ACTION_ENGLISH.get(action, action.replace("_", " "))
+    if not label:
+        return ""
     if detail:
         return f"{label} {detail}.".replace("..", ".")
-    return f"{label}.".capitalize() if label else ""
+    return f"{label}."
 
 
 def is_why_ask(message: str) -> bool:
@@ -234,11 +310,42 @@ def is_why_ask(message: str) -> bool:
 
 
 def explain_recent(*, limit: int = _RECENT_DEFAULT) -> str:
-    """English from the last audit lines. Never dumps JSON."""
+    """English from the last audit lines. One bullet per action. Never dumps JSON. No re-run."""
     rows = read_recent(limit)
     if not rows:
         return "I haven't recorded any actions yet."
-    lines = [s for s in (_english(r) for r in rows) if s]
+    tid = ""
+    for rec in reversed(rows):
+        if rec.get("turn_id"):
+            tid = str(rec.get("turn_id"))
+            break
+    if tid:
+        scoped = [r for r in rows if str(r.get("turn_id") or "") == tid]
+        if scoped:
+            rows = scoped
+    pending: dict[str, str] = {}
+    seen: set[str] = set()
+    lines: list[str] = []
+    for rec in rows:
+        action = str(rec.get("action") or "").strip()
+        detail = _safe_detail(rec.get("detail") or "")
+        if action == "tool_start":
+            pending[_tool_name(detail)] = detail
+            continue
+        start = pending.pop(_tool_name(detail), "") if action == "tool_end" else ""
+        text = _english(rec, start_detail=start)
+        if not text:
+            continue
+        path = _path_from_detail(start or detail)
+        name = _tool_name(detail) if action == "tool_end" else action
+        if action in ("write", "append", "overwrite") or name == "write_file":
+            key = f"write:{path or text}"
+        else:
+            key = f"{name}:{path or text}"
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(text)
     if not lines:
         return "I took a few steps, but there's nothing useful to quote from the log."
     return "Here's what I just did:\n\n" + "\n".join(f"• {s}" for s in lines)

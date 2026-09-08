@@ -606,6 +606,28 @@ def fast_tool_answer(message: str) -> Optional[str]:
     if _MULTI_STEP_RE.search(msg):
         return None
 
+    # --- List a directory → list_directory (empty is 0 files, 0 folders — not "No matches") ---
+    list_m = re.match(r"^\s*(?:list|ls)\s+(.+?)\s*$", msg, re.I)
+    if list_m:
+        reg = _registry_mod()
+        if reg is not None:
+            raw = list_m.group(1).strip()
+            raw = re.sub(r"^(?:the\s+)?(?:folder|directory|dir)\s+", "", raw, flags=re.I)
+            target = _ft_count_target(raw.lower()) if raw else "~"
+            if raw.startswith("~") or raw.startswith("/"):
+                target = raw.split()[0]
+            _host.PrimusSession.emit_think("Fast tool", f"list_directory({target}) — direct", "running")
+            listing = _ft_tool_text(reg.list_directory, path=target)
+            if listing.startswith(("✗", "Refusing", "Not found")):
+                return listing
+            if (
+                (not listing.strip())
+                or listing.startswith("No matches")
+                or listing.startswith("0 files, 0 folders")
+            ):
+                return f"0 files, 0 folders in `{target}`."
+            return listing
+
     # --- Weather → get_weather (network-bound, ~1s) ---
     # Only treat as a *current weather* request: skip when it's really an action
     # ("open a ticket about the weather") or a discussion ("weather patterns in history").
@@ -3668,7 +3690,12 @@ def _user_path_in_process(step: str) -> bool:
         return True
     if pm._READ_RE.match(step):
         return True
-    if pm.is_write_with_step(step) or pm._WRITE_RE.match(step) or pm.is_create_dir_step(step):
+    if (
+        pm.is_write_with_step(step)
+        or pm._WRITE_RE.match(step)
+        or pm.is_create_file_step(step)
+        or pm.is_create_dir_step(step)
+    ):
         return True
     if pm._DELETE_RE.match(step) or re.search(r"\bdelete\b.*\bdraft\b", low):
         return True
@@ -3832,6 +3859,7 @@ def _invoke_primus_impl(
     from primus.core.path_mode import (  # noqa: PLC0415 — keep path_mode off the hot import
         current_path_mode,
         has_file_write_steps,
+        has_list_steps,
         inspect_path_message,
         set_path_mode,
     )
@@ -3902,6 +3930,7 @@ def _invoke_primus_impl(
         or (path_ins.toggle_on and path_ins.steps)
         or (current_path_mode() == "user_path" and len(path_ins.steps) > 1)
         or has_file_write_steps(path_ins.steps)
+        or has_list_steps(path_ins.steps)
     )
     if path_ins.toggle_on and not path_ins.steps and not path_ins.extra_ask:
         _host.PrimusSession.active_agent = "primus"
