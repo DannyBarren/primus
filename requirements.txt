@@ -1,0 +1,53 @@
+# Primus runtime dependencies (core server: UI + agents + RAG + tools).
+# Versions are intentionally unpinned to match the project's `uv pip install` setup; pin these in a
+# lockfile for reproducible cloud builds. Desktop-only extras (pyautogui, pystray, piper-tts) are
+# omitted because they are gracefully optional and a headless container cannot use them.
+
+# Web UI
+gradio
+
+# Agent stack (dual-model LangGraph orchestration over Ollama)
+langchain
+langchain-ollama
+langchain-community
+langchain-text-splitters
+langgraph
+langgraph-prebuilt
+# Optional: SQLite agent-thread checkpoints. Primus boots and runs fully without it
+# (falls back to in-memory); install to persist agent threads across restarts.
+langgraph-checkpoint-sqlite
+pydantic
+
+# Knowledge base / RAG (multi-collection Chroma + Ollama embeddings)
+chromadb
+
+# Documents + ingestion
+pypdf
+pdfplumber
+python-docx
+openpyxl
+python-pptx
+
+# Web research / scraping
+beautifulsoup4
+feedparser
+trafilatura
+duckduckgo-search
+requests
+
+# Gmail + Calendar integration (official Google APIs over OAuth2 — optional, degrades gracefully)
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+
+# Slack integration (Slack Web API — optional, degrades gracefully)
+slack-sdk
+
+# Voice input (local STT) — optional but bootable headless
+faster-whisper
+
+# System monitor
+psutil
+
+# Local secret vault (Fernet; key from PRIMUS_VAULT_PASS)
+cryptography

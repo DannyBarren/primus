@@ -1,0 +1,51 @@
+# Keep the build context tiny and reproducible: only admin_assistant.py, primus/, and
+# requirements.txt actually need to ship into the image.
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual envs / interpreters
+.venv/
+venv/
+env/
+.python-version
+
+# Local runtime state (these live in volumes, never in the image)
+.primus/
+data/
+config/
+*.log
+*.bak
+*.tmp
+
+# Scratch / migration / analysis scripts and ad-hoc json
+_*.py
+_*.json
+
+# Docs & meta (not needed at runtime)
+*.md
+LICENSE
+
+# VCS / editor / OS cruft
+.git/
+.gitignore
+.gitattributes
+.github/
+.vscode/
+.idea/
+.cursor/
+.DS_Store
+
+# Docker files themselves don't need to be in the context
+Dockerfile
+docker-compose*.yml
+.dockerignore
+Makefile

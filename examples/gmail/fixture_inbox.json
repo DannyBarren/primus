@@ -1,0 +1,82 @@
+{
+  "description": "Demo mailbox for a fresh Primus clone. Served by the Gmail list/read tools when gmail_fixture_mode is on and no real gmail_token.json exists. All addresses are .example — nothing here is real.",
+  "messages": [
+    {
+      "id": "fx-0001",
+      "date": "Thu, 3 Sep 2026 09:14:00 -0400",
+      "from": "Amira Haddad <amira@acme.example>",
+      "to": "operator@localhost.example",
+      "subject": "Re: Q3 proposal",
+      "snippet": "Thanks for sending this over — the breakdown looks good. Can you confirm the beta date before Friday?",
+      "body": "Hi,\n\nThanks for sending the Q3 proposal over — the breakdown looks good on our side.\n\nTwo things before we sign:\n\n1. Can you confirm the beta review date before Friday?\n2. Legal asked whether the 30-day support window starts at launch or at beta.\n\nIf both check out we're ready to move.\n\nBest,\nAmira\nAcme Co.",
+      "unread": true,
+      "labels": ["INBOX", "UNREAD"]
+    },
+    {
+      "id": "fx-0002",
+      "date": "Thu, 3 Sep 2026 08:02:00 -0400",
+      "from": "Northwind Billing <billing@northwind.example>",
+      "to": "operator@localhost.example",
+      "subject": "Invoice #INV-2026-118 — hosting renewal",
+      "snippet": "Your annual hosting renewal invoice is attached: $412.00 due 2026-09-17.",
+      "body": "Hello,\n\nYour annual hosting renewal is coming up.\n\nInvoice: #INV-2026-118\nAmount: $412.00\nDue: 2026-09-17\n\nPay online at the link in the attached PDF (not included in this fixture).\n\nNorthwind Billing",
+      "unread": true,
+      "labels": ["INBOX", "UNREAD"]
+    },
+    {
+      "id": "fx-0003",
+      "date": "Wed, 2 Sep 2026 17:45:00 -0400",
+      "from": "Priya Raman <priya@studio.example>",
+      "to": "operator@localhost.example",
+      "subject": "Fixture check-in",
+      "snippet": "This is a demo message. The marker for evals is GMAIL-FIXTURE-ALPHA-4421.",
+      "body": "Hey,\n\nThis is a demo message in the Primus fixture mailbox. If you can read this in the Inbox drawer, fixture mode is working.\n\nThe marker for evals is GMAIL-FIXTURE-ALPHA-4421.\n\n— Priya",
+      "unread": true,
+      "labels": ["INBOX", "UNREAD"]
+    },
+    {
+      "id": "fx-0004",
+      "date": "Wed, 2 Sep 2026 12:30:00 -0400",
+      "from": "Changelog Weekly <news@changelog.example>",
+      "to": "operator@localhost.example",
+      "subject": "Changelog Weekly — local LLMs edition",
+      "snippet": "This week: small models get faster, agents get boring (good), and more.",
+      "body": "This week in open source:\n\n- Small models keep getting faster on consumer GPUs\n- Agent frameworks calm down and get boring (a good thing)\n- A nostalgic look at cron\n\nUnsubscribe link omitted in this fixture.",
+      "unread": false,
+      "labels": ["INBOX"]
+    },
+    {
+      "id": "fx-0005",
+      "date": "Tue, 1 Sep 2026 15:05:00 -0400",
+      "from": "Calendar <calendar-notification@google.example>",
+      "to": "operator@localhost.example",
+      "subject": "Invitation: Portal rebuild kickoff @ Thu Sep 10, 2026 10:00",
+      "snippet": "Amira Haddad has invited you to Portal rebuild kickoff.",
+      "body": "Amira Haddad (amira@acme.example) has invited you to:\n\nPortal rebuild kickoff\nThu Sep 10, 2026, 10:00–11:00 (EDT)\n\nAgenda: scope walkthrough, beta date confirmation.",
+      "unread": false,
+      "labels": ["INBOX"]
+    },
+    {
+      "id": "fx-0006",
+      "date": "Tue, 1 Sep 2026 11:22:00 -0400",
+      "from": "GitHub <notifications@github.example>",
+      "to": "operator@localhost.example",
+      "subject": "[primus-demo] CI passed on main",
+      "snippet": "All checks have passed for commit abc1234.",
+      "body": "All checks have passed for commit abc1234 on main.\n\n3 successful checks.",
+      "unread": false,
+      "labels": ["INBOX"]
+    },
+    {
+      "id": "fx-0007",
+      "date": "Mon, 31 Aug 2026 19:40:00 -0400",
+      "from": "Sam Okafor <sam@freelance.example>",
+      "to": "operator@localhost.example",
+      "subject": "Re: logo assets",
+      "snippet": "Attached are the final logo exports — SVG and PNG at 1x/2x.",
+      "body": "Hi,\n\nAttached are the final logo exports — SVG plus PNG at 1x and 2x. Let me know if you need other sizes.\n\nSam",
+      "unread": false,
+      "labels": ["INBOX"]
+    }
+  ]
+}

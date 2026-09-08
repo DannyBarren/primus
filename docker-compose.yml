@@ -1,0 +1,77 @@
+# =============================================================================
+# Primus — LOCAL Docker (dev / daily driver).
+#
+# Shares state with the host exactly like `uv run python admin_assistant.py`:
+# bind-mounts ~/.primus and ~/.config/primus, binds the UI to 127.0.0.1 only, CPU by default.
+#
+#   export UID=$(id -u) GID=$(id -g)      # so bind-mounted dirs stay writable
+#   docker compose up -d --build          # (or: make up)
+#   open http://127.0.0.1:7860
+#
+# Models are pulled automatically on first run by the one-shot `ollama-init` service.
+# For cloud/GPU/production, use docker-compose.cloud.yml instead (or: make cloud).
+# =============================================================================
+name: primus
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: primus-ollama
+    volumes:
+      - ollama-models:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"   # local debugging only; remove to keep Ollama internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # One-shot: pull the models into the ollama volume, then exit. primus waits for success.
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        ollama pull qwen2.5:7b &&
+        ollama pull qwen2.5-coder:7b &&
+        ollama pull llama3.2:3b &&
+        ollama pull nomic-embed-text
+    restart: "no"
+
+  primus:
+    build: .
+    image: primus:latest
+    container_name: primus
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      PRIMUS_DATA_DIR: /data
+      PRIMUS_CONFIG_DIR: /config
+    ports:
+      - "127.0.0.1:7860:7860"   # local-only; Primus has no auth
+    volumes:
+      - ${HOME}/.primus:/data            # knowledge base, memories, chat history, agent outputs
+      - ${HOME}/.config/primus:/config   # config.json + logs
+    user: "${UID:-1000}:${GID:-1000}"    # match host UID so bind mounts stay writable
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7860/gradio_api/startup-events || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  ollama-models:

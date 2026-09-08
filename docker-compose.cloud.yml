@@ -1,0 +1,92 @@
+# =============================================================================
+# Primus — CLOUD / production (Vast.ai · RunPod · self-hosted VPS).
+#
+# Standalone stack (run with -f docker-compose.cloud.yml; do NOT combine with the local file).
+# Named volumes for persistence, non-root container user, GPU block ready to enable, and the
+# UI exposed on all interfaces so the provider's port mapping / your reverse proxy can reach it.
+#
+#   docker compose -f docker-compose.cloud.yml up -d --build     # (or: make cloud)
+#   docker compose -f docker-compose.cloud.yml logs -f primus
+#
+# !! SECURITY: Primus has NO built-in auth. Only expose port 7860 behind a trusted network,
+#    a reverse proxy with auth (Caddy/Nginx + basic-auth/OAuth), the provider's tunnel, or an
+#    SSH tunnel. Do not put it on the open internet unprotected.
+# =============================================================================
+name: primus-cloud
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: primus-ollama
+    volumes:
+      - ollama-models:/root/.ollama
+    expose:
+      - "11434"                 # internal-only; not published to the host
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    # ---- GPU (NVIDIA) — uncomment on a GPU host with nvidia-container-toolkit installed ----
+    # (Vast.ai / RunPod GPU instances already have the toolkit; this is what uses the GPU.)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # One-shot: pull the models into the ollama volume, then exit. primus waits for success.
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        ollama pull qwen2.5:7b &&
+        ollama pull qwen2.5-coder:7b &&
+        ollama pull llama3.2:3b &&
+        ollama pull nomic-embed-text
+    restart: "no"
+
+  primus:
+    build: .
+    image: primus:latest
+    container_name: primus
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      PRIMUS_DATA_DIR: /data
+      PRIMUS_CONFIG_DIR: /config
+    ports:
+      # Exposed on all host interfaces; the cloud provider maps this to a public port/tunnel.
+      # Keep it behind auth/a proxy (see the security note above).
+      - "7860:7860"
+    volumes:
+      - primus-data:/data       # knowledge base, memories, chat history, agent outputs
+      - primus-config:/config   # config.json + logs
+    # Runs as the image's non-root `primus` (uid 1000); fresh named volumes inherit its
+    # ownership on first mount, so they're writable without a host-UID override.
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7860/gradio_api/startup-events || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  ollama-models:
+  primus-data:
+  primus-config:

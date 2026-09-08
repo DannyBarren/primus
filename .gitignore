@@ -1,0 +1,57 @@
+# --- Secrets: NEVER commit these -------------------------------------------------
+# Gmail / Google OAuth client + token files (live copies belong in ~/.primus/)
+gmail_credentials.json
+gmail_token.json
+client_secret*.json
+*_token.json
+*_credentials.json
+.env
+.env.*
+!.env.example
+*.pem
+vault/
+
+# --- Local runtime state (lives in ~/.primus and ~/.config/primus, never here) ---
+.primus/
+data/
+config/
+*.log
+*.bak
+*.tmp
+checkpoints.sqlite
+brain_budget.json
+Throw_away/
+
+# Chroma / knowledge-base data if it is ever copied into the repo tree
+chroma/
+.chroma/
+**/chroma/
+**/knowledge/uploads/
+**/knowledge/downloads/
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Eval / demo output (keep the folder, drop generated reports except the sample)
+examples/out/*
+!examples/out/.gitkeep
+!examples/out/eval_sample.md
+
+# VCS / editor / OS cruft
+.vscode/
+.idea/
+.cursor/
+.DS_Store
