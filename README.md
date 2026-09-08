@@ -1149,3 +1149,7 @@ still works identically.
 ---
 
 *Primus v1.0 — your private, local executive assistant. Built to be fast, decisive, and to get better every time you use it. Now GPU-accelerated and self-tuning on AMD Ryzen AI.*
+
+## License
+
+Copyright (c) 2026 Daniel Lee Barren (Danny Barren). Personal, educational, and other non-commercial use is welcome. Commercial use needs his written permission — commercial rights stay with him. If you publish, demo, write about, or reuse Primus, credit is required. Terms: [LICENSE](LICENSE) (PolyForm Noncommercial 1.0.0). Attribution: [NOTICE](NOTICE).
