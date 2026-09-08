@@ -1,5 +1,9 @@
 # Primus
 
+<p align="center">
+  <img src="docs/assets/header.png" alt="Primus — local-first operator" width="100%">
+</p>
+
 A roommate for your Linux box: files, mail, and shell as you, with one approval gate for anything destructive. Fast facts never leave the laptop. Hard leftover work can call a frontier model under a cap you set — the planner is last resort, not the front door.
 
 ---
