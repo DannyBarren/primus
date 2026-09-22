@@ -210,12 +210,15 @@ def delete_file(path: str, confirm: bool = False) -> str:
     Goes through the EXACT same approval path as `rm` in the terminal: the deletion is queued
     for one-click approval in both Suggest and Execute mode; it never deletes directly,
     whatever `confirm` says (the flag is accepted only so older call sites don't break).
-    Paths outside home are always refused.
+    Paths outside home are always refused, as are FileMaid-blocked paths.
     """
     del confirm  # not a safety gate — the approval queue is
     target, err = _host._guard_path(path, must_exist=True)
     if err:
         return f"✗ {err}"
+    blocked = _filemaid_write_block(target)
+    if blocked:
+        return blocked
     cmd = f"rm -rf {shlex.quote(str(target))}" if target.is_dir() else f"rm {shlex.quote(str(target))}"
     return _host.run_shell(cmd)
 
