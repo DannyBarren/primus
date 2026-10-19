@@ -157,7 +157,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ollama_url": os.environ.get("OLLAMA_URL", os.environ.get("OLLAMA_HOST", "http://localhost:11434")),
     "host": os.environ.get("PRIMUS_HOST", "127.0.0.1"),
     "port": int(os.environ.get("PRIMUS_PORT", "7860")),
-    "execution_mode": "execute",
+    "execution_mode": "suggest",
     # primus_path (default): Primus decides order and tools (leftover → plan→execute graph).
     # user_path: execute the operator's listed steps in that order. No extra store file.
     "path_mode": "primus_path",

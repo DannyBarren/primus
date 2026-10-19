@@ -1,7 +1,11 @@
 """Named tool packs for the inner ``create_agent``.
 
-``build_tools()`` still registers every tool (120). The react agent only sees the
-bound pack (~10 schemas). Fast paths never consult this module.
+``build_tools()`` still registers every tool. The react agent only sees the
+bound pack (~8–14 schemas). Fast paths never consult this module.
+
+The chosen pack is stored on ``PrimusSession`` (not only ``threading.local``)
+because leftover planning runs ``create_agent`` on a worker thread. A TLS-only
+store meant the planner always saw the 4-tool default pack.
 
 Library modules reach the host via ``_host`` — do not import admin_assistant.
 """
@@ -24,6 +28,8 @@ PACKS: dict[str, tuple[str, ...]] = {
         "gmail_read_message",
         "gmail_create_draft",
         "gmail_send_email",
+        "ensure_gmail_access",
+        "gmail_get_auth_url",
     ),
     "files": (
         "list_directory",
@@ -34,19 +40,61 @@ PACKS: dict[str, tuple[str, ...]] = {
         "delete_file",
         "search_files",
         "create_directory",
+        "batch_file_operations",
+        "read_office_file",
+        "edit_docx",
+        "edit_xlsx",
     ),
-    "shell": ("terminal", "git"),
+    "shell": (
+        "terminal",
+        "git",
+        "long_running_command",
+        "open_application",
+        "list_installed_apps",
+    ),
     "knowledge": (
         "search_knowledge",
         "remember_fact",
         "remember_preference",
         "recall_memory",
+        "learn_knowledge",
+        "kb_status",
+        "index_knowledge_folder",
+    ),
+    "web": (
+        "web_search",
+        "deep_web_search",
+        "read_article",
+        "get_news",
+        "search_reddit",
+        "browse_web",
+        "get_weather",
+    ),
+    "system": (
+        "system_info",
+        "system_monitor",
+        "device_management",
+        "disk_cleanup",
+        "process_management",
+        "network_status",
+        "package_management",
+        "service_control",
+    ),
+    "comms": (
+        "calendar_status",
+        "calendar_list_events",
+        "calendar_create_event",
+        "slack_status",
+        "slack_list_channels",
+        "slack_read_channel",
+        "slack_post_message",
+        "triage_communications",
     ),
     "brain": ("ask_grok",),
-    "default": ("list_directory", "get_datetime", "get_news", "ask_grok"),
+    "default": ("list_directory", "get_datetime", "get_news", "web_search", "ask_grok"),
 }
 
-PACK_ORDER = ("mail", "files", "shell", "knowledge", "brain", "default")
+PACK_ORDER = ("mail", "files", "shell", "knowledge", "web", "system", "comms", "brain", "default")
 
 _TOOL_TO_PACK: dict[str, str] = {
     name: pack for pack in PACK_ORDER for name in PACKS[pack]
@@ -76,6 +124,20 @@ _KNOWLEDGE_RE = re.compile(
     re.I,
 )
 _BRAIN_RE = re.compile(r"\b(?:ask_grok|ask grok|\bgrok\b|need_brain|frontier)\b", re.I)
+_WEB_RE = re.compile(
+    r"\b(?:web_search|search the web|look up|google|wikipedia|reddit|hn\b|hacker news|"
+    r"read_article|browse|https?://|weather|forecast)\b",
+    re.I,
+)
+_SYSTEM_RE = re.compile(
+    r"\b(?:cpu|ram|memory|battery|disk|wifi|wi-fi|process(?:es)?|systemd|"
+    r"system_monitor|system_info|package|apt |service_control)\b",
+    re.I,
+)
+_COMMS_RE = re.compile(
+    r"\b(?:calendar|meeting|slack|triage|free slots?|schedule)\b",
+    re.I,
+)
 _SNAKE_RE = re.compile(r"\b([a-z][a-z0-9_]{2,})\b")
 _INVENTED_MAIL = frozenset({
     "gmail_get_unread_email", "gmail_get_latest", "get_unread_email",
@@ -84,6 +146,10 @@ _INVENTED_MAIL = frozenset({
 _TLS = threading.local()
 _REGISTRY_NAMES: Optional[set[str]] = None
 _REGISTRY_LOCK = threading.Lock()
+# Process-wide turn pack. TLS is not inherited by the graph worker thread;
+# PrimusSession is the host mirror. This dict is the library source of truth.
+_TURN_LOCK = threading.Lock()
+_TURN: dict[str, Any] = {"pack": "default", "extra": []}
 
 
 def registry_names() -> set[str]:
@@ -154,7 +220,7 @@ def select_pack(text: str = "", tools: Optional[Iterable[str]] = None) -> str:
             p = pack_for_tool(t)
             if p and p not in hits:
                 hits.append(p)
-        for prefer in ("mail", "files", "shell", "knowledge", "brain"):
+        for prefer in ("mail", "files", "shell", "knowledge", "web", "system", "comms", "brain"):
             if prefer in hits:
                 return prefer
         if hits:
@@ -176,6 +242,12 @@ def select_pack(text: str = "", tools: Optional[Iterable[str]] = None) -> str:
         return "shell"
     if _KNOWLEDGE_RE.search(blob):
         return "knowledge"
+    if _COMMS_RE.search(blob):
+        return "comms"
+    if _WEB_RE.search(blob):
+        return "web"
+    if _SYSTEM_RE.search(blob):
+        return "system"
     if _BRAIN_RE.search(blob):
         return "brain"
     if re.search(
@@ -253,22 +325,74 @@ def bound_names(tools: list) -> list[str]:
     return [getattr(t, "name", "") for t in (tools or []) if getattr(t, "name", "")]
 
 
+def _session_set(pack: str, extra: list[str]) -> None:
+    session = getattr(_host, "PrimusSession", None)
+    if session is None:
+        return
+    try:
+        session.turn_pack = pack
+        session.turn_pack_extra = list(extra)
+    except Exception:  # noqa: BLE001 — session is optional in unit tests
+        pass
+
+
+def _session_get_pack() -> Optional[str]:
+    session = getattr(_host, "PrimusSession", None)
+    if session is None:
+        return None
+    pack = getattr(session, "turn_pack", None)
+    return pack if pack in PACKS else None
+
+
+def _session_get_extra() -> Optional[list[str]]:
+    session = getattr(_host, "PrimusSession", None)
+    if session is None:
+        return None
+    extra = getattr(session, "turn_pack_extra", None)
+    return list(extra) if extra else []
+
+
 def set_turn_pack(pack: str, extra: Optional[Iterable[str]] = None) -> None:
-    _TLS.pack = pack if pack in PACKS else "default"
-    _TLS.extra = [str(x).strip() for x in (extra or []) if str(x).strip()]
+    chosen = pack if pack in PACKS else "default"
+    extras = [str(x).strip() for x in (extra or []) if str(x).strip()]
+    with _TURN_LOCK:
+        _TURN["pack"] = chosen
+        _TURN["extra"] = extras
+    _TLS.pack = chosen
+    _TLS.extra = extras
+    _session_set(chosen, extras)
 
 
 def clear_turn_pack() -> None:
+    with _TURN_LOCK:
+        _TURN["pack"] = "default"
+        _TURN["extra"] = []
     _TLS.pack = "default"
     _TLS.extra = []
+    _session_set("default", [])
 
 
 def current_pack() -> str:
+    # Process-wide store first — the graph worker thread does not inherit TLS.
+    with _TURN_LOCK:
+        pack = _TURN.get("pack")
+    if pack in PACKS:
+        return pack
+    pack = _session_get_pack()
+    if pack:
+        return pack
     pack = getattr(_TLS, "pack", None)
     return pack if pack in PACKS else "default"
 
 
 def current_extra() -> list[str]:
+    with _TURN_LOCK:
+        extra = list(_TURN.get("extra") or [])
+    if extra:
+        return extra
+    extra = _session_get_extra()
+    if extra:
+        return extra
     extra = getattr(_TLS, "extra", None)
     return list(extra) if extra else []
 

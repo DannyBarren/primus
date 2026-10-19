@@ -1339,7 +1339,7 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
     """Build Gradio UI; returns (demo, theme, css) for Gradio 6 launch()."""
     _allow_export_downloads()
     settings = _host.load_settings()
-    default_mode = settings.get("execution_mode", "execute")
+    default_mode = settings.get("execution_mode", "suggest")
     compact = bool(_host.CFG.get("compact_mode", False))
     # The conversation fills the viewport between the top bar and the composer dock.
     chat_h = "calc(100vh - 168px)" if compact else "calc(100vh - 184px)"
@@ -2553,8 +2553,22 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
                     )
                 return reply(body, "Self")
             if low == "/approve":
+                # Bare /approve used to set allow_dangerous_once and return, leaving a
+                # one-time approval pending for the next unrelated tool call. Treat it
+                # as /approve run when something is queued; otherwise say so.
+                cmd = _host.PrimusSession.pending_shell_command or _host.PrimusSession.pending_suggestion
+                if not cmd:
+                    return reply(
+                        "Nothing queued. Use `/approve run` for the highlighted command, "
+                        "`/approve all` for the safe batch, or `/approve edit` / `/approve learn`.",
+                        "Empty",
+                    )
+                old = _host.PrimusSession.mode
+                _host.PrimusSession.mode = _host.ExecutionMode.EXECUTE
                 _host.PrimusSession.allow_dangerous_once = True
-                return raw, history, "Approved once"
+                out = _host.run_shell(cmd, force=True)
+                _host.PrimusSession.mode = old
+                return reply(f"```bash\n{cmd}\n```\n\n{out}", "Ran")
             if low == "/approve all":
                 out = _host.run_queued_safe_commands()
                 return reply(out, "Approved safe")

@@ -8,9 +8,8 @@
 #   docker compose -f docker-compose.cloud.yml up -d --build     # (or: make cloud)
 #   docker compose -f docker-compose.cloud.yml logs -f primus
 #
-# !! SECURITY: Primus has NO built-in auth. Only expose port 7860 behind a trusted network,
-#    a reverse proxy with auth (Caddy/Nginx + basic-auth/OAuth), the provider's tunnel, or an
-#    SSH tunnel. Do not put it on the open internet unprotected.
+# !! SECURITY: Primus requires PRIMUS_AUTH_TOKEN when bound beyond loopback (this file
+#    publishes :7860). Prefer also putting a reverse proxy / provider tunnel in front.
 # =============================================================================
 name: primus-cloud
 
@@ -69,9 +68,11 @@ services:
       OLLAMA_URL: http://ollama:11434
       PRIMUS_DATA_DIR: /data
       PRIMUS_CONFIG_DIR: /config
+      PRIMUS_AUTH_TOKEN: ${PRIMUS_AUTH_TOKEN:?set PRIMUS_AUTH_TOKEN — refuse to publish without it}
+      PRIMUS_AUTH_USER: ${PRIMUS_AUTH_USER:-primus}
     ports:
-      # Exposed on all host interfaces; the cloud provider maps this to a public port/tunnel.
-      # Keep it behind auth/a proxy (see the security note above).
+      # Published on all host interfaces. Gradio auth is required (PRIMUS_AUTH_TOKEN).
+      # Still prefer a reverse proxy / SSH tunnel in front of a public GPU host.
       - "7860:7860"
     volumes:
       - primus-data:/data       # knowledge base, memories, chat history, agent outputs

@@ -1,53 +1,51 @@
-# Primus runtime dependencies (core server: UI + agents + RAG + tools).
-# Versions are intentionally unpinned to match the project's `uv pip install` setup; pin these in a
-# lockfile for reproducible cloud builds. Desktop-only extras (pyautogui, pystray, piper-tts) are
-# omitted because they are gracefully optional and a headless container cannot use them.
+# Primus runtime — pinned for reproducible local + Docker + CI builds.
+# Desktop-only extras (pyautogui, pystray, piper-tts) stay optional and are omitted.
 
 # Web UI
-gradio
+gradio==5.20.0
 
-# Agent stack (dual-model LangGraph orchestration over Ollama)
-langchain
-langchain-ollama
-langchain-community
-langchain-text-splitters
-langgraph
-langgraph-prebuilt
-# Optional: SQLite agent-thread checkpoints. Primus boots and runs fully without it
-# (falls back to in-memory); install to persist agent threads across restarts.
-langgraph-checkpoint-sqlite
-pydantic
+# Agent stack
+langchain==1.3.9
+langchain-core==1.4.7
+langchain-ollama==1.1.0
+langchain-community==0.3.27
+langchain-text-splitters==1.1.2
+langchain-chroma==1.1.0
+langgraph==1.2.5
+langgraph-prebuilt==1.1.0
+langgraph-checkpoint-sqlite==3.1.1
+pydantic==2.13.4
 
-# Knowledge base / RAG (multi-collection Chroma + Ollama embeddings)
-chromadb
+# Knowledge base / RAG
+chromadb==1.5.9
 
 # Documents + ingestion
-pypdf
-pdfplumber
-python-docx
-openpyxl
-python-pptx
+pypdf==6.13.2
+pdfplumber==0.11.8
+python-docx==1.2.0
+openpyxl==3.1.5
+python-pptx==1.0.2
 
 # Web research / scraping
-beautifulsoup4
-feedparser
-trafilatura
-duckduckgo-search
-requests
+beautifulsoup4==4.15.0
+feedparser==6.0.12
+trafilatura==2.1.0
+duckduckgo-search==8.1.1
+requests==2.32.5
 
-# Gmail + Calendar integration (official Google APIs over OAuth2 — optional, degrades gracefully)
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
+# Gmail + Calendar (optional at runtime; degrade if unused)
+google-api-python-client==2.198.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.3
 
-# Slack integration (Slack Web API — optional, degrades gracefully)
-slack-sdk
+# Slack (optional)
+slack-sdk==3.36.0
 
-# Voice input (local STT) — optional but bootable headless
-faster-whisper
+# Voice input (optional)
+faster-whisper==1.2.1
 
 # System monitor
-psutil
+psutil==7.2.2
 
-# Local secret vault (Fernet; key from PRIMUS_VAULT_PASS)
-cryptography
+# Local secret vault
+cryptography==49.0.0

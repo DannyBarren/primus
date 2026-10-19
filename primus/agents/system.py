@@ -1361,6 +1361,7 @@ from primus.core.prompts import (  # noqa: E402
     STEP_PROMPT,
     SUMMARY_PROMPT,
     FORGE_SYSTEM,
+    FORGE_FAST_SYSTEM,
     FAST_CHAT_SYSTEM,
     PRIMUS_SYSTEM,
 )
@@ -1376,6 +1377,8 @@ class PrimusGraphState(TypedDict):
     mode: str
     final_answer: str
     rag_context: str
+    pack: str
+    pack_extra: list[str]
 
 
 def gradio_history_to_messages(history: list) -> list[BaseMessage]:
@@ -2396,6 +2399,8 @@ def build_agent_graph(
         rag = state.get("rag_context") or "(No knowledge retrieved.)"
         task = f"Execute step {idx + 1}/{len(steps)}: {current}\nOriginal task: {state['input']}\n\n{STEP_PROMPT}"
         thread = f"{agent_id}-step-{idx}"
+        step_pack = state.get("pack") or None
+        step_extra = list(state.get("pack_extra") or [])
 
         def _attempt(content: str, suffix: str) -> str:
             result = invoke_step_agent(
@@ -2405,6 +2410,8 @@ def build_agent_graph(
                 user_content=content,
                 thread_id=f"{thread}{suffix}",
                 llm=llm,
+                pack=step_pack,
+                extra_tools=step_extra or None,
                 agent_id=agent_id,
                 mode=state.get("mode", _host.PrimusSession.mode.value),
                 memory=mem,
@@ -2517,6 +2524,8 @@ def build_agent_graph(
         today = datetime.now().strftime("%A, %Y-%m-%d %H:%M")
         rag = state.get("rag_context") or "(No knowledge retrieved.)"
         current = (state.get("steps") or ["Task"])[0]
+        step_pack = state.get("pack") or None
+        step_extra = list(state.get("pack_extra") or [])
         # Single-step turns used to run on the bare user message, so no execution discipline
         # reached the path that answers most requests — hence "I'd need the contents of that
         # file" on a file Primus can read. STEP_PROMPT is the wrong fit here (it asks for a
@@ -2532,6 +2541,8 @@ def build_agent_graph(
                 user_content=content or task,
                 thread_id=f"{agent_id}-single{suffix}",
                 llm=llm,
+                pack=step_pack,
+                extra_tools=step_extra or None,
                 agent_id=agent_id,
                 mode=state.get("mode", _host.PrimusSession.mode.value),
                 memory=mem,
@@ -3727,6 +3738,8 @@ def _invoke_packed_user_step(step: str, pack: str, extra: list[str], mode: str) 
         "mode": mode,
         "final_answer": "",
         "rag_context": "(No knowledge retrieved.)",
+        "pack": pack,
+        "pack_extra": list(extra or []),
     }
     result = invoke_step_agent(
         None,
@@ -4252,6 +4265,8 @@ def _invoke_primus_impl(
     except Exception as exc:  # noqa: BLE001
         _host.log.debug("Dynamic switch skipped: %s", exc)
 
+    from primus.core.tool_packs import current_extra, current_pack  # noqa: PLC0415
+
     payload = {
         "input": message,
         "messages": _host.prepare_agent_messages(history),
@@ -4262,6 +4277,8 @@ def _invoke_primus_impl(
         "mode": mode,
         "final_answer": "",
         "rag_context": mem_block,
+        "pack": current_pack(),
+        "pack_extra": current_extra(),
     }
     # Hard timeout for BOTH agents now (previously Primus ran uncapped and could hang the UI).
     # The thread-based wrapper also polls for Halt, so this bounds every model/tool chain.

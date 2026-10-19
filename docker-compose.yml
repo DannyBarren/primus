@@ -6,7 +6,7 @@
 #
 #   export UID=$(id -u) GID=$(id -g)      # so bind-mounted dirs stay writable
 #   docker compose up -d --build          # (or: make up)
-#   open http://127.0.0.1:7860
+#   open http://127.0.0.1:7860  (Gradio user primus / token from .env)
 #
 # Models are pulled automatically on first run by the one-shot `ollama-init` service.
 # For cloud/GPU/production, use docker-compose.cloud.yml instead (or: make cloud).
@@ -59,8 +59,12 @@ services:
       OLLAMA_URL: http://ollama:11434
       PRIMUS_DATA_DIR: /data
       PRIMUS_CONFIG_DIR: /config
+      # Required: the process binds 0.0.0.0 inside the container. Compose publishes
+      # loopback-only on the host; Primus still refuses to start without a token.
+      PRIMUS_AUTH_TOKEN: ${PRIMUS_AUTH_TOKEN:?set PRIMUS_AUTH_TOKEN — see .env.example}
+      PRIMUS_AUTH_USER: ${PRIMUS_AUTH_USER:-primus}
     ports:
-      - "127.0.0.1:7860:7860"   # local-only; Primus has no auth
+      - "127.0.0.1:7860:7860"   # host loopback only
     volumes:
       - ${HOME}/.primus:/data            # knowledge base, memories, chat history, agent outputs
       - ${HOME}/.config/primus:/config   # config.json + logs

@@ -9,7 +9,7 @@ Layout:
   config.py     env-overridable paths + DEFAULT_CONFIG + load/save logic     [done]
   utils/        gpu.py (AMD GPU accel) + patches.py (gradio/launch); more to come  [partial]
   memory/       system.py — LTM + KnowledgeBase/RAG + MemorySystem + metrics  [done]
-  tools/        registry.py — full tool system (68+ @tools + build_tools)    [done]
+  tools/        registry.py — full tool system (120 tools: 2 class + 118 @tool)  [done]
   agents/       system.py — routing/graphs, fast paths, invoke_primus,
                 watchdog, background + scheduled agents                      [done]
   ui/           builder.py — the entire Gradio UI (theme, tabs, panels,
@@ -24,4 +24,4 @@ a live ``_host`` reference, so call sites are unchanged and behavior is 100% ide
 Nothing here is locked or read-only — every directive remains freely editable. Run with
 ``uv run python admin_assistant.py``.
 """
-__version__ = "0.1.0"
+__version__ = "0.9.4"
