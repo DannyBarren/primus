@@ -19,12 +19,13 @@ DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\|\s*(ba)?sh\b", re.I), "pipe to shell"),
     (re.compile(r"curl[^\n|]*\|\s*(ba)?sh", re.I), "remote script execution"),
     (re.compile(r"wget[^\n|]*\|\s*(ba)?sh", re.I), "remote script execution"),
-    (re.compile(r"\bgit\s+push\s+.*(-f|--force)\b", re.I), "force git push"),
+    (re.compile(r"\bgit\b(?:\s+\S+)*\s+push\b.*(?:\s(?:-f|--force|--force-with-lease)\b)", re.I), "force git push"),
     (re.compile(r"\bgit\s+reset\s+--hard\b", re.I), "hard git reset"),
     (re.compile(r"\bapt\s+(purge|remove|autoremove)", re.I), "package removal"),
     (re.compile(r"\bdpkg\s+-r\b", re.I), "package removal"),
     (re.compile(r"\bmv\b", re.I), "move/rename (mv)"),
     (re.compile(r"\bcp\s+-r\b", re.I), "recursive copy"),
+    (re.compile(r"(?:^|[\s;|&])-(?:delete|exec)(?:\s|$)", re.I), "find -delete/-exec"),
 ]
 
 # Read-only / low-risk command leaders — auto-run when auto_execute_safe_commands is enabled
@@ -33,8 +34,8 @@ SAFE_COMMAND_LEADERS = (
     r"tree\b", r"du\b", r"df\b", r"free\b", r"whoami\b", r"id\b", r"echo\b", r"file\b",
     r"stat\b", r"wc\b", r"grep\b", r"rg\b", r"lsblk\b", r"mount\b", r"uptime\b", r"date\b",
     r"which\b", r"type\b", r"hostname\b", r"uname\b", r"lscpu\b", r"lsusb\b", r"lsmem\b",
-    r"printenv\b", r"env\b", r"basename\b", r"dirname\b", r"realpath\b", r"readlink\b",
-    r"git\s+(?:status|log|diff|show|branch|remote|rev-parse|describe)\b",
+    r"basename\b", r"dirname\b", r"realpath\b", r"readlink\b",
+    r"git(?:\s+-C\s+\S+)?\s+(?:status|log|diff|show|branch|remote|rev-parse|describe)\b",
     r"rclone\s+(?:listremotes|about|lsd|ls|size|ncdu|version)\b",
     r"ps\b", r"top\s+-bn1\b", r"pgrep\b", r"pidof\b",
     r"nmcli\s+(?:-t\s+)?(?:dev|device|connection|radio|general)\b",
@@ -49,7 +50,12 @@ SAFE_LEADING_RE = re.compile(
     r"^\s*(?:" + "|".join(SAFE_COMMAND_LEADERS) + r")",
     re.I,
 )
+# ``-delete``/``-exec`` are find(1) flags. A leading ``\b`` never matches before ``-``
+# (both the preceding space and the dash are non-word), so ``find ~ -delete`` used to
+# pass as safe. Anchor on whitespace / start instead.
 UNSAFE_IN_SAFE = re.compile(
-    r"\b(rm\b|rmdir\b|sudo\b|mkfs\b|dd\b|>\s|>>\s|\|\s*(?:ba)?sh\b|-delete\b|-exec\b|chmod\b|chown\b)",
+    r"(?:^|[\s;|&])-(?:delete|exec)(?:\s|$)"
+    r"|\b(rm\b|rmdir\b|sudo\b|mkfs\b|dd\b|chmod\b|chown\b)"
+    r"|>\s|>>\s|\|\s*(?:ba)?sh\b",
     re.I,
 )

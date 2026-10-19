@@ -156,9 +156,9 @@ def read_file(path: str, offset: int = 0, max_lines: int = 200) -> str:
 
 def _filemaid_write_block(path) -> Optional[str]:
     """FileMaid layer after ``_guard_path``. Empty = allowed. Never a ``@tool``."""
-    from primus.core.filemaid_safety import is_path_blocked  # noqa: PLC0415
+    from primus.core.filemaid_safety import is_write_blocked  # noqa: PLC0415
 
-    blocked, reason = is_path_blocked(path)
+    blocked, reason = is_write_blocked(path)
     if blocked:
         return f"✗ Refusing blocked path: {reason}"
     return None
@@ -1012,10 +1012,22 @@ _FOLDER_SHORTCUTS: dict[str, str] = {
 }
 
 
-def _spawn_detached(command: str) -> str:
-    """Launch a GUI app/file in the background, fully detached from Primus."""
+def _spawn_detached(command: str, *, trusted: bool = False) -> str:
+    """Launch a GUI app/file in the background, fully detached from Primus.
+
+    Every command still goes through ``assess_command_risk``. Trusted allowlisted
+    launches (known apps, quoted URLs/paths) only queue when the classifier says
+    dangerous. Anything else is queued in Suggest and refused when dangerous.
+    """
     if _host.PrimusSession.is_cancelled():
         return "⏹ Halted — launch skipped."
+    risk, reasons = _host.assess_command_risk(command)
+    if risk == "dangerous" and not _host.PrimusSession.allow_dangerous_once:
+        return _host.suggest_command(command, risk="dangerous", reasons=reasons)
+    # Allowlisted app/folder/URL launches may run in Suggest (they are not a shell).
+    # Anything else still queues when the mode is Suggest or the command is not safe.
+    if not trusted and _host.PrimusSession.mode == _host.ExecutionMode.SUGGEST and risk != "safe":
+        return _host.suggest_command(command, risk=risk or "review", reasons=reasons)
     # Don't open the same app/URL twice for one request unless explicitly asked.
     if _host.PrimusSession.already_did("launch", command):
         return f"Already opened that (`{command}`) a moment ago — skipping the duplicate."
@@ -1049,44 +1061,58 @@ def open_application(target: str) -> str:
     raw = (target or "").strip()
     if not raw:
         return "Provide an app name, folder, path, or URL to open."
+    from primus.core.launch import (  # noqa: PLC0415
+        has_shell_meta,
+        is_launch_url,
+        looks_like_app_name,
+    )
     key = raw.lower()
 
-    # URLs → default browser
-    if re.match(r"^https?://", raw, re.I):
+    # Shell-shaped input ("rm -rf ~", "find ~ -delete") is not an app launch.
+    # The ``run <words>`` fast path used to land here and spawn the raw text.
+    if has_shell_meta(raw) and not is_launch_url(raw) and key not in _FOLDER_SHORTCUTS:
+        risk, reasons = _host.assess_command_risk(raw)
+        return _host.suggest_command(raw, risk=risk or "review", reasons=reasons)
+
+    # URLs → default browser (quoted)
+    if is_launch_url(raw):
         if shutil.which("xdg-open"):
-            return _spawn_detached(f"xdg-open {shlex.quote(raw)}")
+            return _spawn_detached(f"xdg-open {shlex.quote(raw)}", trusted=True)
         return "No xdg-open available to open URLs."
 
     # Known folder shortcut
     if key in _FOLDER_SHORTCUTS:
         path = Path(_FOLDER_SHORTCUTS[key]).expanduser()
         opener = "xdg-open" if shutil.which("xdg-open") else "nautilus"
-        return _spawn_detached(f"{opener} {shlex.quote(str(path))}")
+        return _spawn_detached(f"{opener} {shlex.quote(str(path))}", trusted=True)
 
-    # Known app → try candidates in order
+    # Known app → try allowlisted candidates only (never the raw user string as a shell).
     candidates = list(COMMON_APP_LAUNCHERS.get(key, []))
-    candidates.append(raw)  # fall back to the literal name as a binary
+    if looks_like_app_name(raw) and raw not in candidates:
+        candidates.append(raw)
     for cand in candidates:
         leader = cand.split()[0]
         if leader == "flatpak":
             if shutil.which("flatpak"):
-                return _spawn_detached(cand)
-        elif shutil.which(leader):
-            return _spawn_detached(cand)
+                return _spawn_detached(cand, trusted=True)
+        elif shutil.which(leader) and looks_like_app_name(leader):
+            return _spawn_detached(cand, trusted=True)
 
-    # Existing path on disk
+    # Existing path on disk — quoted, home-confined when it resolves
     maybe_path = Path(raw).expanduser()
     if maybe_path.exists() and shutil.which("xdg-open"):
-        return _spawn_detached(f"xdg-open {shlex.quote(str(maybe_path))}")
+        guarded, err = _host._guard_path(str(maybe_path), allow_system_read=True)
+        if err:
+            return f"✗ {err}"
+        return _spawn_detached(f"xdg-open {shlex.quote(str(guarded))}", trusted=True)
 
-    # Last resort: .desktop launcher lookup
-    if shutil.which("gtk-launch"):
-        return _spawn_detached(f"gtk-launch {shlex.quote(raw)}")
-    if shutil.which("xdg-open"):
-        return _spawn_detached(f"xdg-open {shlex.quote(raw)}")
+    # Last resort: .desktop name only when it looks like an app token
+    if looks_like_app_name(raw) and shutil.which("gtk-launch"):
+        return _spawn_detached(f"gtk-launch {shlex.quote(raw)}", trusted=True)
     return (
         f"Couldn't find a launcher for '{raw}'. "
-        "Try the exact binary name, or tell me the full command to run."
+        "Use a known app name (firefox, zoom, …) or a path. "
+        "Shell commands go through the terminal tool so they can be risk-checked."
     )
 
 
@@ -4128,6 +4154,8 @@ def batch_file_operations(
     except Exception as exc:  # noqa: BLE001
         return f"Bad pattern '{pattern}': {exc}"
 
+    if _host.PrimusSession.mode == _host.ExecutionMode.SUGGEST:
+        dry_run = True
     tag = "PREVIEW (dry run)" if dry_run else "APPLIED"
     if op == "list":
         lines = [f"{p.name}  ·  {p.stat().st_size // 1024} KB" for p in matches[:200]]
@@ -4215,17 +4243,15 @@ def long_running_command(command: str, timeout_sec: int = 1800, workdir: str = "
     command = (command or "").strip()
     if not command:
         return "No command provided."
-    risk, reasons = _host.assess_command_risk(command)
-    if risk == "dangerous" and not _host.PrimusSession.allow_dangerous_once:
-        return _host.suggest_command(command, risk="dangerous", reasons=reasons)
     cwd = None
     if workdir:
         cwd = _host._resolve_path(workdir)
         if not cwd.exists() or not _host._path_in_home(cwd):
             return f"Working directory not found or outside home: {cwd}"
     timeout = max(60, min(int(timeout_sec or 1800), 7200))
-    header = f"▶ **Long-running** (timeout {timeout}s):\n```bash\n{command}\n```\n\n"
-    return header + _host._execute_shell_core(command, cwd=cwd, timeout=timeout)
+    # Same gate as TerminalTool — Suggest queues review/dangerous; never call _execute_shell_core
+    # directly (that skipped the classifier and the mode check).
+    return _host.run_shell(command, cwd=cwd, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -4465,6 +4491,12 @@ def create_full_project(
             "content": f"# {name}\n\n{description}\n\n## Tech stack\n{tech_stack}\n\n"
                        f"## Features\n{features or '-'}\n",
         })
+    if _host.PrimusSession.mode == _host.ExecutionMode.SUGGEST:
+        listing = "\n".join(f"- {f.get('path')}" for f in files[:40])
+        return (
+            f"[Suggest] Would create project **{name}** at `{root}` "
+            f"({len(files)} files). Switch to Execute to write.\n\n{listing}"
+        )
     written, skipped = _write_project_files(root, files)
     if not written:
         return f"⚠ Nothing written for '{name}'. " + ("; ".join(skipped[:5]) or note)
@@ -4507,6 +4539,12 @@ def build_application_from_spec(app_name: str, detailed_spec: str, tech_stack: s
     files, note = _forge_generate_manifest(prompt, num_predict=int(_host.CFG.get("forge_num_predict", 4096)))
     if not files:
         return f"⚠ Could not build '{name}': {note}"
+    if _host.PrimusSession.mode == _host.ExecutionMode.SUGGEST:
+        listing = "\n".join(f"- {f.get('path')}" for f in files[:40])
+        return (
+            f"[Suggest] Would build application **{name}** at `{root}` "
+            f"({len(files)} files). Switch to Execute to write.\n\n{listing}"
+        )
     written, skipped = _write_project_files(root, files)
     if not written:
         return f"⚠ Nothing written for '{name}'. " + ("; ".join(skipped[:5]) or note)
@@ -4580,6 +4618,10 @@ def iterative_code_improver(code_or_project_path: str, goals: str = "readability
         improved = re.sub(r"^```[\w]*\n?|```$", "", improved.strip(), flags=re.MULTILINE).strip()
         if not improved or improved == original.strip():
             results.append(f"  • {fpath.name}: no change suggested")
+            continue
+        if _host.PrimusSession.mode == _host.ExecutionMode.SUGGEST:
+            delta = len(improved.splitlines()) - len(original.splitlines())
+            results.append(f"  [Suggest] {fpath.name}: would update ({delta:+d} lines)")
             continue
         try:
             fpath.with_suffix(fpath.suffix + ".bak").write_text(original, encoding="utf-8")
@@ -4904,12 +4946,12 @@ def recover_ollama_gpu(max_attempts: int = 8, model: str = "qwen2.5:7b") -> str:
 # gated by the same safety model as edit_docx/edit_xlsx: in Suggest mode it only previews.
 # ===========================================================================
 
-# Least-privilege scopes: readonly (list/get/search) + compose (drafts) + send (messages.send).
+# Least-privilege scopes — match SECURITY.md. Do not request mail.google.com (full mailbox)
+# or gmail.modify (label/trash). Sending still goes through gmail.send + Suggest preview.
 _GMAIL_SCOPES = [
-    "https://mail.google.com/",                          # full mailbox access (read, modify, send)
-    "https://www.googleapis.com/auth/gmail.modify",      # read/label/modify without full-delete
-    "https://www.googleapis.com/auth/gmail.compose",     # create drafts / compose
-    "https://www.googleapis.com/auth/gmail.readonly",    # read-only access (metadata + bodies)
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.send",
 ]
 _GMAIL_CREDS_PATH = _host.APP_DIR / "gmail_credentials.json"  # OAuth client secret (from GCP console)
 _GMAIL_TOKEN_PATH = _host.APP_DIR / "gmail_token.json"        # cached user token (auto-created)

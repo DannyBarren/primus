@@ -456,13 +456,20 @@ DEFAULT_PREFERENCES = {
     "agent_frameworks": "CrewAI, LangChain, LangGraph",
 }
 
-# Command safety guardrails now live in primus/core/guardrails.py (imported verbatim; fully editable).
+# Command safety guardrails + risk classifier (imported; fully editable).
 from primus.core.guardrails import (  # noqa: E402
     DANGEROUS_PATTERNS,
     SAFE_COMMAND_LEADERS,
     SAFE_LEADING_RE,
     UNSAFE_IN_SAFE,
 )
+from primus.core.risk import (  # noqa: E402
+    assess_command_risk,
+    classify_command,
+    split_shell_chain,
+    split_shell_pipeline,
+)
+from primus.core.auth import require_auth_for_bind  # noqa: E402
 
 WORKFLOW_SUGGESTIONS = [
     "Organize my Downloads folder (preview first)",
@@ -1552,11 +1559,15 @@ class _TurnCancelled(Exception):
 
 
 class PrimusSession:
-    mode: ExecutionMode = ExecutionMode.EXECUTE
+    mode: ExecutionMode = ExecutionMode.SUGGEST
     pending_shell_command: Optional[str] = None
     pending_suggestion: Optional[str] = None
     pending_queue: list[dict[str, Any]] = []
     allow_dangerous_once: bool = False
+    # Tool-pack for this leftover turn. Stored on the session (not thread-local) so
+    # the graph worker thread sees the same pack the receptionist chose.
+    turn_pack: str = "default"
+    turn_pack_extra: list[str] = []
     command_history: list[str] = []
     history_index: int = -1
     thinking_steps: list[dict[str, Any]] = []
@@ -2623,47 +2634,6 @@ def _guard_path(
     return io_target, None
 
 
-def classify_command(command: str) -> tuple[bool, list[str]]:
-    reasons = [label for pattern, label in DANGEROUS_PATTERNS if pattern.search(command)]
-    return bool(reasons), reasons
-
-
-def split_shell_pipeline(command: str) -> list[str]:
-    """Split on pipes for per-segment safety checks."""
-    return [seg.strip() for seg in command.split("|") if seg.strip()]
-
-
-def split_shell_chain(command: str) -> list[str]:
-    """Split on && or ; for chained commands."""
-    return [p.strip() for p in re.split(r"\s*&&\s*|\s*;\s*", command.strip()) if p.strip()]
-
-
-def _is_safe_command_part(part: str) -> bool:
-    part = part.strip()
-    if not part or UNSAFE_IN_SAFE.search(part):
-        return False
-    if re.search(r"(?<![<\\])>>?(?!>)", part):
-        return False
-    for segment in split_shell_pipeline(part):
-        if not SAFE_LEADING_RE.match(segment):
-            return False
-    return True
-
-
-def assess_command_risk(command: str) -> tuple[str, list[str]]:
-    """Return risk tier: safe | review | dangerous."""
-    command = command.strip()
-    if not command:
-        return "review", []
-    is_dangerous, reasons = classify_command(command)
-    if is_dangerous:
-        return "dangerous", reasons
-    for part in split_shell_chain(command):
-        if not _is_safe_command_part(part):
-            return "review", [f"needs review: {part[:60]}"]
-    return "safe", []
-
-
 def suggest_command(command: str, *, risk: str = "review", reasons: Optional[list[str]] = None) -> str:
     return PrimusSession.queue_command(command, source="suggest", risk=risk, reasons=reasons)
 
@@ -3617,6 +3587,8 @@ def main() -> None:
     share = bool(getattr(args, "share", False)) and not getattr(args, "local", False)
     requested_host = "127.0.0.1" if getattr(args, "local", False) else (CFG.get("host") or SERVER_HOST or "127.0.0.1")
     requested_port = int(CFG.get("port") or DEFAULT_PORT or 7860)
+    # Remote bind / public share without a shared secret is a refused start, not a warning.
+    auth_creds = require_auth_for_bind(requested_host, share=share)
     bound_port = _find_free_port(requested_host, requested_port)
     if bound_port != requested_port:
         log.info("Port %s busy — Primus will use %s instead", requested_port, bound_port)
@@ -3665,6 +3637,9 @@ def main() -> None:
         # Only non-blocking when tray actually started; otherwise main exits and kills server
         prevent_thread_lock=tray_ok,
     )
+    if auth_creds:
+        base_kwargs["auth"] = auth_creds
+        base_kwargs["auth_message"] = "Primus — operator sign-in"
 
     def _try_launch(server_name: str, server_port: int, share_flag: bool) -> None:
         # Keep the proxy bypass + localhost/schema patches fresh on every attempt.
@@ -3692,17 +3667,21 @@ def main() -> None:
                 "quiet": True,
                 "prevent_thread_lock": tray_ok,
             }
+            if auth_creds:
+                essential["auth"] = auth_creds
             demo.launch(**essential)
 
     def _print_ready_banner() -> None:
         bar = "─" * 56
         share_line = "  Public link: enabled (--share)\n" if share else ""
+        auth_line = "  Auth     : Gradio sign-in required (PRIMUS_AUTH_TOKEN)\n" if auth_creds else ""
         print(
             f"\n{bar}\n"
             f"  ◈ Primus is ready\n"
             f"  Local UI : {browser_url()}\n"
             f"  Mode     : local-only{' + tray' if tray_ok else ''} · dark · "
             f"{'compact' if CFG.get('compact_mode') else 'standard'}\n"
+            f"{auth_line}"
             f"{share_line}"
             f"  Stop     : Ctrl+C\n"
             f"  Restart  : uv run python admin_assistant.py\n"

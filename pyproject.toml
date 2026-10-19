@@ -1,0 +1,24 @@
+[project]
+name = "primus"
+version = "0.9.4"
+description = "Local-first Linux operator agent with a human approval gate"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "PolyForm-Noncommercial-1.0.0" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = ["primus", "tests"]
+extend-exclude = ["artifacts", "examples", "docs"]
+
+[tool.ruff.lint]
+# Error-level rules only — the extracted host still carries pre-existing style debt.
+select = ["E9", "F63", "F7", "F82"]

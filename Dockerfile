@@ -72,6 +72,7 @@ EXPOSE 7860
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=5 \
     CMD curl -fsS http://127.0.0.1:7860/gradio_api/startup-events || exit 1
 
-# Headless server: bind all interfaces inside the container (host port mapping controls real
-# exposure), no system tray. Data/config dirs come from the env vars above.
+# Headless server: bind all interfaces *inside* the container (compose / the host
+# mapping decides real exposure). A remote bind refuses to start without
+# PRIMUS_AUTH_TOKEN. Data/config dirs come from the env vars above.
 CMD ["python", "admin_assistant.py", "--host", "0.0.0.0", "--port", "7860", "--no-tray"]
