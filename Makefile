@@ -26,7 +26,7 @@ CLOUD_COMPOSE := docker compose -f docker-compose.cloud.yml
 
 .PHONY: help up down restart build logs ps shell pull-models clean \
         cloud cloud-down cloud-logs cloud-build cloud-ps cloud-clean \
-        run validate eval export import
+        run validate
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -84,16 +84,6 @@ cloud-clean: ## Stop cloud stack AND delete all named volumes (DESTROYS persiste
 ## ---- Host / utilities ---------------------------------------------------------------------
 run: ## Run on the host without Docker (uv run python admin_assistant.py)
 	uv run python admin_assistant.py
-
-eval: ## Run the smoke evals (sandboxed; writes examples/out/eval_<ts>.md)
-	uv run python scripts/eval_primus.py
-
-export: ## Write a backup zip to APP_DIR/exports (INCLUDE_SECRETS=1 to include tokens)
-	uv run python admin_assistant.py --export $(if $(INCLUDE_SECRETS),--include-secrets,)
-
-import: ## Restore a backup zip (FILE=path.zip; INCLUDE_SECRETS=1 to restore tokens)
-	@test -n "$(FILE)" || (echo "usage: make import FILE=path.zip" && exit 2)
-	uv run python admin_assistant.py --import $(FILE) $(if $(INCLUDE_SECRETS),--include-secrets,)
 
 validate: ## Lint Dockerfile + validate both compose files
 	docker build --check . || true

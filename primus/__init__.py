@@ -1,4 +1,4 @@
-"""Primus — a local-first executive assistant (modular package).
+"""Primus — Danny Barren's local executive assistant (modular package).
 
 This package is the in-progress modular home for the Primus application that currently
 lives in the single file ``admin_assistant.py``. Modules are extracted incrementally and
