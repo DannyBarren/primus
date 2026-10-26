@@ -18,9 +18,8 @@ FIRST-TIME SETUP (copy/paste in terminal)
   # 2) Install Ollama + pull a model
   curl -fsSL https://ollama.com/install.sh | sh
   ollama serve &   # or: systemctl --user enable --now ollama
-  ollama pull qwen2.5:7b          # Primus — fast orchestrator (default)
-  ollama pull qwen2.5-coder:7b  # Forge — coding / deep technical agent
-  # ollama pull llama3.2:3b       # lighter Primus alternative
+  ollama pull qwen2.5:7b           # Primus — light and medium turns (default)
+  ollama pull qwen2.5-coder:32b   # heavy model — deep reasoning / multi-step work
 
   # 3) Python environment (from project dir, e.g. ~/ai-workshop)
   cd ~/ai-workshop
@@ -517,10 +516,9 @@ OPTIONAL_PYTHON_PACKAGES = [
 ]
 
 RECOMMENDED_MODELS = [
-    ("qwen2.5:7b", "Primus orchestrator — fast daily driver (default)"),
-    ("qwen2.5-coder:7b", "Forge — coding, debugging, scripts (required for delegation)"),
-    ("llama3.2:3b", "Lighter Primus — maximum chat speed"),
-    ("qwen2.5:14b", "Heavier Primus — slower, smarter general tasks"),
+    ("qwen2.5:7b", "Primus — light and medium turns (default)"),
+    ("qwen2.5-coder:32b", "Heavy model — deep reasoning and multi-step work"),
+    ("qwen2.5:14b", "Heavier general model — slower, smarter tasks"),
     ("mistral:7b", "Alternative general model"),
 ]
 
@@ -1186,7 +1184,7 @@ def handle_model_slash(raw: str) -> str:
         )
         lines.append("")
         lines.append(
-            "Switch: `/model set qwen2.5:7b` · `/model forge qwen2.5-coder:7b` · "
+            "Switch: `/model set qwen2.5:7b` · `/model forge qwen2.5-coder:32b` · "
             "`/model embed nomic-embed-text` · `/model loaded` · `/model sequential on|off`"
         )
         return "\n".join(lines)
@@ -1329,7 +1327,7 @@ def render_setup_status_markdown() -> str:
     lines.append("")
     lines.append("### Model switching")
     lines.append(
-        "- Chat: `/model list` · `/model set qwen2.5:7b` · `/model forge qwen2.5-coder:7b` · "
+        "- Chat: `/model list` · `/model set qwen2.5:7b` · `/model forge qwen2.5-coder:32b` · "
         "`/model embed nomic-embed-text`"
     )
     lines.append(f"- Config file: `{CONFIG_FILE}`")
@@ -1423,7 +1421,7 @@ def init_config(args: Optional[argparse.Namespace] = None) -> dict[str, Any]:
     cfg = config.apply_cli_and_sync(cfg, args)
     CFG = cfg
     DEFAULT_MODEL = cfg["model"]
-    FORGE_MODEL = cfg.get("forge_model", "qwen2.5-coder:7b")
+    FORGE_MODEL = cfg.get("forge_model", "qwen2.5-coder:32b")
     OLLAMA_URL = cfg["ollama_url"]
     SERVER_HOST = cfg["host"]
     DEFAULT_PORT = int(cfg["port"])
@@ -1573,6 +1571,8 @@ class PrimusSession:
     delegation_reason: str = ""
     force_forge_next: bool = False
     current_topic: str = ""  # active conversation thread, for focus/continuity
+    recent_entities: list[str] = []  # names, paths, and places from recent turns
+    active_preferences: list[str] = []  # preferences stated this session
     active_project_id: str = GENERAL_CHAT_ID  # active project chat (UI/session scoping only)
     last_path: str = "primus"  # which execution path answered (meta-learning latency label)
     last_intent: str = "chat"  # router intent of the last turn (for dynamic model switching)
@@ -2245,10 +2245,14 @@ def current_scope_hint() -> str:
 
 
 
-def memory_context_block() -> str:
-    """Legacy JSON facts + preferences for agent prompt (condensed)."""
+def memory_context_block(query: str = "") -> str:
+    """Legacy JSON facts + preferences for the agent prompt.
+
+    Pass the current request so only overlapping facts are included. The /memory
+    view calls this with no query and still gets the short full list.
+    """
     try:
-        return get_memory_system().agent_memory_block()
+        return get_memory_system().agent_memory_block(query)
     except Exception:
         mem = load_memory()
         facts = mem.get("facts") or []
@@ -2886,12 +2890,16 @@ def build_status_bar() -> str:
     except OSError:
         disk_pct = 0
     agent = (PrimusSession.active_agent or "primus").upper()
-    model = PrimusSession.active_model or CFG.get("model", DEFAULT_MODEL)
+    raw_model = str(PrimusSession.active_model or "").strip()
+    if raw_model.lower() in {"", "instant", "local", "fast-tool", "user-path", "path-mode", "access"}:
+        model = str(CFG.get("model", DEFAULT_MODEL))
+    else:
+        model = raw_model
     if agent == "PRIMUS" and not PrimusSession.active_model:
         model = CFG.get("model", DEFAULT_MODEL)
 
     forge_ok = get_ollama_details().get("forge_ready", False)
-    forge_tag = "Forge✓" if forge_ok else "Forge—"
+    forge_tag = "Forge ready" if forge_ok else "Forge not loaded"
 
     mem_n = kb_n = "?"
     try:
@@ -2911,20 +2919,25 @@ def build_status_bar() -> str:
         if g.get("util"):
             gpu_tag = f" · GPU {g['util']}"
         elif g.get("ollama_ps") and "GPU" in g["ollama_ps"]:
-            gpu_tag = " · GPU✓"
+            gpu_tag = " · GPU on"
     except Exception:
         pass
-    return (
-        f"{chat_st} {agent}·{model.split(':')[0]} · {forge_tag} · "
-        f"MEM {mem_n} · KB {kb_n} · "
+    local_tag = "Local only" if bool(CFG.get("local_only", True)) else "External brain on"
+    now = f"{chat_st} {agent} · {model} · {forge_tag} · {local_tag}"
+    system = (
+        f"Memory {mem_n} · Knowledge {kb_n} · "
         f"CPU {cpu:.0f}% · RAM {mem_pct:.0f}% · Disk {disk_pct:.0f}%{gpu_tag} · {bat}"
     )
+    return f"Now: {now}\n\nSystem: {system}"
 
 
 def render_thinking_html() -> str:
     steps = PrimusSession.thinking_steps
     if not steps:
-        return '<div class="think-panel empty">Awaiting task…</div>'
+        return (
+            '<div class="think-panel empty">No steps yet. Send a message and routing, '
+            'tools, and errors show up here.</div>'
+        )
     rows = []
     for s in steps:
         icon = {"pending": "◌", "running": "◉", "done": "✓", "error": "✗"}.get(s.get("status", ""), "·")

@@ -950,13 +950,22 @@ def device_management(action: str, value: str = "") -> str:
     if action == "hibernate":
         return _host.suggest_command("systemctl hibernate")
     if action == "battery":
-        return _host.run_shell(
+        from primus.core.present import present_battery  # noqa: PLC0415
+
+        raw = _host.run_shell(
             "upower -i $(upower -e | grep BAT | head -1) 2>/dev/null; "
             "cat /sys/class/power_supply/BAT*/capacity 2>/dev/null",
             force=True,
         )
+        return present_battery(raw)
     if action == "wifi":
-        return _host.run_shell("nmcli -t -f ACTIVE,SSID,SIGNAL,SECURITY dev wifi | head -10", force=True)
+        from primus.core.present import present_wifi  # noqa: PLC0415
+
+        raw = _host.run_shell(
+            "nmcli -t -f ACTIVE,SSID,SIGNAL,SECURITY dev wifi | head -10",
+            force=True,
+        )
+        return present_wifi(raw)
     if action == "wifi_on":
         return _host.suggest_command("nmcli radio wifi on")
     if action == "wifi_off":
@@ -964,7 +973,13 @@ def device_management(action: str, value: str = "") -> str:
     if action == "wifi_connect" and value:
         return _host.suggest_command(f"nmcli dev wifi connect {shlex.quote(value)}")
     if action == "bluetooth":
-        return _host.run_shell("bluetoothctl show 2>/dev/null | head -15; bluetoothctl devices 2>/dev/null | head -10", force=True)
+        from primus.core.present import present_bluetooth  # noqa: PLC0415
+
+        raw = _host.run_shell(
+            "bluetoothctl show 2>/dev/null | head -15; bluetoothctl devices 2>/dev/null | head -10",
+            force=True,
+        )
+        return present_bluetooth(raw)
     if action == "bt_on":
         return _host.suggest_command("bluetoothctl power on")
     if action == "bt_off":
@@ -1012,13 +1027,14 @@ _FOLDER_SHORTCUTS: dict[str, str] = {
 }
 
 
-def _spawn_detached(command: str) -> str:
+def _spawn_detached(command: str, label: str = "") -> str:
     """Launch a GUI app/file in the background, fully detached from Primus."""
     if _host.PrimusSession.is_cancelled():
-        return "⏹ Halted — launch skipped."
+        return "Stopped — I didn't launch that."
+    shown = (label or "").strip() or "that"
     # Don't open the same app/URL twice for one request unless explicitly asked.
     if _host.PrimusSession.already_did("launch", command):
-        return f"Already opened that (`{command}`) a moment ago — skipping the duplicate."
+        return f"Already opened {shown} a moment ago."
     _host.PrimusSession.push_history(command)
     try:
         subprocess.Popen(  # noqa: S602 - launching trusted local apps
@@ -1032,7 +1048,7 @@ def _spawn_detached(command: str) -> str:
             env={**os.environ},
         )
         _host.PrimusSession.mark_done("launch", command)
-        return f"▶ Launched: `{command}`"
+        return f"Opened {shown}."
     except Exception as exc:  # noqa: BLE001
         return f"Failed to launch `{command}`: {exc}"
 
@@ -1054,14 +1070,14 @@ def open_application(target: str) -> str:
     # URLs → default browser
     if re.match(r"^https?://", raw, re.I):
         if shutil.which("xdg-open"):
-            return _spawn_detached(f"xdg-open {shlex.quote(raw)}")
+            return _spawn_detached(f"xdg-open {shlex.quote(raw)}", raw)
         return "No xdg-open available to open URLs."
 
     # Known folder shortcut
     if key in _FOLDER_SHORTCUTS:
         path = Path(_FOLDER_SHORTCUTS[key]).expanduser()
         opener = "xdg-open" if shutil.which("xdg-open") else "nautilus"
-        return _spawn_detached(f"{opener} {shlex.quote(str(path))}")
+        return _spawn_detached(f"{opener} {shlex.quote(str(path))}", raw)
 
     # Known app → try candidates in order
     candidates = list(COMMON_APP_LAUNCHERS.get(key, []))
@@ -1070,20 +1086,20 @@ def open_application(target: str) -> str:
         leader = cand.split()[0]
         if leader == "flatpak":
             if shutil.which("flatpak"):
-                return _spawn_detached(cand)
+                return _spawn_detached(cand, raw)
         elif shutil.which(leader):
-            return _spawn_detached(cand)
+            return _spawn_detached(cand, raw)
 
     # Existing path on disk
     maybe_path = Path(raw).expanduser()
     if maybe_path.exists() and shutil.which("xdg-open"):
-        return _spawn_detached(f"xdg-open {shlex.quote(str(maybe_path))}")
+        return _spawn_detached(f"xdg-open {shlex.quote(str(maybe_path))}", raw)
 
     # Last resort: .desktop launcher lookup
     if shutil.which("gtk-launch"):
-        return _spawn_detached(f"gtk-launch {shlex.quote(raw)}")
+        return _spawn_detached(f"gtk-launch {shlex.quote(raw)}", raw)
     if shutil.which("xdg-open"):
-        return _spawn_detached(f"xdg-open {shlex.quote(raw)}")
+        return _spawn_detached(f"xdg-open {shlex.quote(raw)}", raw)
     return (
         f"Couldn't find a launcher for '{raw}'. "
         "Try the exact binary name, or tell me the full command to run."
@@ -1340,7 +1356,9 @@ def get_weather(location: str = "") -> str:
     import urllib.parse
     import urllib.request
 
-    loc = (location or "").strip()
+    from primus.core.present import clean_place, voice_weather  # noqa: PLC0415
+
+    loc = clean_place(location or "")
     fmt = "%l: %c %t (feels %f), %h humidity, wind %w"
     url = f"https://wttr.in/{urllib.parse.quote(loc)}?format={urllib.parse.quote(fmt)}&m"
     try:
@@ -1348,13 +1366,12 @@ def get_weather(location: str = "") -> str:
         with urllib.request.urlopen(req, timeout=8) as resp:  # noqa: S310 (trusted host)
             text = resp.read().decode("utf-8", "replace").strip()
     except Exception as exc:  # noqa: BLE001
-        return (
-            "I couldn't reach the weather service — looks like I'm offline "
-            f"({str(exc)[:80]}). I'll grab it once you're connected."
-        )
+        _host.log.debug("weather fetch failed: %s", exc)
+        return "The weather service didn't respond. I'll try again once you're back online."
     if not text or "Unknown location" in text or "<" in text or "Sorry" in text:
-        return f"I couldn't find weather for {loc or 'your area'} right now."
-    return f"Weather — {text}"
+        where = loc or "your area"
+        return f"I couldn't find weather for {where} right now."
+    return voice_weather(text)
 
 
 @tool
@@ -1376,11 +1393,17 @@ def disk_cleanup(mode: str = "report") -> str:
             f"find {shlex.quote(str(_host.HOME))} -xdev -type f -size +500M 2>/dev/null | head -20",
             force=True,
         )
+    from primus.core.present import strip_shell_echo  # noqa: PLC0415
+
     usage = shutil.disk_usage(_host.HOME)
-    return (
-        f"Home: {usage.used // (1024**3)}G / {usage.total // (1024**3)}G\n"
-        + _host.run_shell("du -sh ~/* 2>/dev/null | sort -hr | head -12", force=True)
+    used = usage.used // (1024**3)
+    total = usage.total // (1024**3)
+    pct = round(100 * usage.used / usage.total) if usage.total else 0
+    detail = strip_shell_echo(
+        _host.run_shell("du -sh ~/* 2>/dev/null | sort -hr | head -12", force=True)
     )
+    lead = f"Home is using {used}G of {total}G ({pct}%)."
+    return f"{lead}\n\n{detail}" if detail else lead
 
 
 @tool
@@ -1475,6 +1498,18 @@ def remember_preference(key: str, value: str) -> str:
     prefs: dict = mem.setdefault("preferences", {})
     prefs[key.strip()] = value.strip()
     _host.save_memory(mem)
+    line = f"{key.strip()}: {value.strip()}".strip(": ")
+    try:
+        held = [p for p in list(getattr(_host.PrimusSession, "active_preferences", []) or []) if p != line]
+        held.insert(0, line[:120])
+        _host.PrimusSession.active_preferences = held[:6]
+        _host.get_memory_system().save_turn_state(
+            str(getattr(_host.PrimusSession, "current_topic", "") or ""),
+            list(getattr(_host.PrimusSession, "recent_entities", []) or []),
+            held[:6],
+        )
+    except Exception:  # noqa: BLE001 — the preference file write already succeeded
+        pass
     return f"Preference saved: {key} = {value}"
 
 
@@ -1494,24 +1529,48 @@ def log_completed_task(task: str, summary: str, outcome: str = "completed") -> s
 @tool
 def recall_memory(query: str = "") -> str:
     """Search long-term memory and knowledge base. Pass a topic or leave empty for recent memories."""
+    from primus.core.session_state import hit_is_relevant  # noqa: PLC0415
+
     ms = _host.get_memory_system()
     if not query.strip():
         return ms.display_recent_memories()
-    ltm = ms.recall_ltm(query, k=5)
+    topic = str(getattr(_host.PrimusSession, "current_topic", "") or "")
+    entities = tuple(getattr(_host.PrimusSession, "recent_entities", []) or [])
+    ltm = [
+        m for m in ms.recall_ltm(query, k=5)
+        if hit_is_relevant(str(m.get("content") or m.get("preview") or ""), query, topic=topic, entities=entities)
+    ]
     try:
         kb_docs = _host.get_kb().search(query, k=5, exclude_kinds={"ltm"})
     except Exception as exc:
         return f"Recall error: {exc}"
+    kb_docs = [
+        doc for doc in kb_docs
+        if hit_is_relevant(doc.page_content or "", query, topic=topic, entities=entities)
+    ]
+    if not ltm and not kb_docs:
+        return "No matching notes for that. Nothing unrelated was pulled in."
     return ms.format_recall_results(ltm, kb_docs)
 
 
 @tool
-def search_knowledge(query: str, limit: int = 5) -> str:
-    """Semantic search across all KB collections. Use before answering domain/technical questions."""
+def search_knowledge(query: str, limit: int = 4) -> str:
+    """Semantic search across KB collections. Use for a specific domain or project question."""
+    from primus.core.session_state import hit_is_relevant  # noqa: PLC0415
+
+    query = (query or "").strip()
+    if len(query) < 3:
+        return "Give a specific topic to search. A one-word lookup is too broad."
+    topic = str(getattr(_host.PrimusSession, "current_topic", "") or "")
+    entities = tuple(getattr(_host.PrimusSession, "recent_entities", []) or [])
     try:
-        docs = _host.get_kb().search(query, k=min(max(limit, 1), 12))
+        docs = _host.get_kb().search(query, k=min(max(int(limit or 4), 1), 6))
     except Exception as exc:
         return f"Knowledge base error: {exc}"
+    docs = [
+        doc for doc in docs
+        if hit_is_relevant(doc.page_content or "", query, topic=topic, entities=entities)
+    ]
     if not docs:
         return "No matching entries. Prefer stating KB has no coverage over guessing."
     body = _host.get_kb().format_results(docs)
@@ -2318,8 +2377,10 @@ def get_news(topic: str = "", limit: int = 6) -> str:
     """
     import urllib.parse
 
+    from primus.core.present import clean_topic  # noqa: PLC0415
+
     limit = max(1, min(int(limit or 6), 15))
-    topic = (topic or "").strip()
+    topic = clean_topic(topic or "")
     _host.PrimusSession.emit_think("News", f"Fetching headlines{' on ' + topic if topic else ''}", "running")
 
     entries: list[dict] = []
@@ -2336,12 +2397,9 @@ def get_news(topic: str = "", limit: int = 6) -> str:
 
     if not entries:
         _host.PrimusSession.emit_think("News", "No items / offline", "error")
-        return (
-            "I couldn't pull news right now — I may be offline, or the feed is down. "
-            "Install `feedparser` (`uv pip install feedparser`) for the most reliable parsing."
-        )
+        return "I couldn't reach a news feed just now."
 
-    head = f"Latest news on **{topic}**:" if topic else "Top headlines right now:"
+    head = f"Here are the latest headlines on {topic}." if topic else "Here are the top headlines."
     lines = [head, ""]
     for i, e in enumerate(entries, 1):
         when = f" _{e['published'][:22]}_" if e.get("published") else ""
@@ -6192,14 +6250,15 @@ def calendar_list_events(max_results: int = 10, time_min: Optional[str] = None) 
         items = resp.get("items", []) or []
         if not items:
             _host.PrimusSession.emit_think("Calendar", "No events", "done")
-            return "No upcoming events found."
+            return "Nothing upcoming on your calendar."
         lines = []
         for ev in items:
             atts = ev.get("attendees", []) or []
-            extra = f"  ({len(atts)} attendee(s))" if atts else ""
+            extra = f" ({len(atts)} attending)" if atts else ""
             lines.append("• " + _cal_fmt_event_line(ev) + extra)
         _host.PrimusSession.emit_think("Calendar", f"{len(items)} event(s)", "done")
-        return f"📅 {len(items)} upcoming event(s):\n\n" + "\n".join(lines)
+        noun = "event" if len(items) == 1 else "events"
+        return f"You have {len(items)} upcoming {noun}:\n\n" + "\n".join(lines)
     except Exception as exc:  # noqa: BLE001
         _host.PrimusSession.emit_think("Calendar", "List failed", "error")
         return f"⚠ Calendar list failed: {str(exc)[:160]}"
@@ -8455,12 +8514,12 @@ def inbox_list_ui(query: str) -> tuple[list[list], list[dict], str]:
 def inbox_read_ui(rows: list[dict], index: Any) -> tuple[str, str]:
     """Open a selected list row → (read-pane markdown, message id)."""
     if not rows or index is None:
-        return "_Select a message above._", ""
+        return "Select a message to read it here.", ""
     try:
         i = int(index[0] if isinstance(index, (list, tuple)) else index)
         row = rows[i]
     except (ValueError, TypeError, IndexError):
-        return "_Select a message above._", ""
+        return "Select a message to read it here.", ""
     msg, note = _gmail_read_structured(row.get("id", ""))
     if not msg:
         return f"⚠ {note}", ""

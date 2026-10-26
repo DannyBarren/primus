@@ -133,7 +133,7 @@ footer, .gradio-container footer { display:none !important; }
 .gradio-container textarea:focus, .gradio-container input:focus, .gradio-container .wrap-inner:focus-within {
   border-color:rgba(154,167,178,.42) !important;
   box-shadow:0 0 0 1px rgba(154,167,178,.14) !important; outline:none !important; }
-.gradio-container ::placeholder { color:var(--p-faint) !important; }
+.gradio-container ::placeholder { color:var(--p-muted) !important; opacity:1; }
 .gradio-container input[type=checkbox], .gradio-container input[type=radio] {
   accent-color:var(--p-accent-2) !important; }
 .gradio-container .options, .gradio-container ul.options {
@@ -156,6 +156,8 @@ footer, .gradio-container footer { display:none !important; }
   background:#0F1218 !important; color:var(--p-text) !important;
   border:1px solid var(--p-line) !important; }
 .gradio-container button.secondary:hover { background:#151A22 !important; border-color:var(--p-line-2) !important; }
+.gradio-container button:focus-visible, .gradio-container a:focus-visible {
+  outline:1px solid rgba(154,167,178,.72) !important; outline-offset:2px !important; }
 .gradio-container button.stop, .gradio-container .stop {
   background:transparent !important; color:var(--p-err) !important;
   border:1px solid rgba(196,92,74,.38) !important; }
@@ -167,6 +169,12 @@ footer, .gradio-container footer { display:none !important; }
    The quiet activity line under the composer already reports state — no pulsing. */
 .gradio-container .generating, .gradio-container .block.generating {
   border:none !important; box-shadow:none !important; animation:none !important; }
+/* A reply reveal replaces the transcript a few times. Mount animations and smooth
+   scrolling turn those replacements into a visible jitter. */
+#primus-chat, #primus-chat .bubble-wrap, #primus-chat .message-wrap,
+#primus-chat .message-row, #primus-chat .message, #primus-chat .message-content {
+  transition:none !important; animation:none !important; }
+#primus-chat .bubble-wrap { overflow-anchor:none; scroll-behavior:auto !important; }
 .gradio-container .progress-bar, .gradio-container .progress-level-inner {
   background:var(--p-accent-2) !important; color:var(--p-text) !important; }
 .gradio-container .progress-text, .gradio-container .meta-text {
@@ -182,7 +190,7 @@ footer, .gradio-container footer { display:none !important; }
   border-bottom:1px solid var(--p-line) !important; }
 #primus-topbar > * { min-width:0 !important; }
 #menu-btn {
-  flex:0 0 auto !important; width:32px !important; min-width:32px !important; height:28px !important;
+  flex:0 0 auto !important; width:36px !important; min-width:36px !important; height:32px !important;
   padding:0 !important; font-size:15px !important; line-height:1 !important;
   background:transparent !important; border:1px solid var(--p-line) !important;
   color:var(--p-muted) !important; }
@@ -192,15 +200,18 @@ footer, .gradio-container footer { display:none !important; }
 .pr-brand { display:flex; align-items:center; gap:12px; min-width:0; }
 .pr-mark { font-size:12px; font-weight:500; letter-spacing:.14em; color:var(--p-text);
   white-space:nowrap; }
-.pr-status { display:inline-flex; align-items:center; gap:6px; font-size:11px;
+.pr-status { display:inline-flex; align-items:center; gap:6px; font-size:12px;
   color:var(--p-muted); font-family:var(--p-mono); white-space:nowrap; }
-.pr-chat { font-size:11.5px; color:var(--p-faint); white-space:nowrap; overflow:hidden;
+.pr-chat { font-size:12px; color:var(--p-muted); white-space:nowrap; overflow:hidden;
   text-overflow:ellipsis; }
 .pr-dot, .health-dot { display:inline-block; width:6px; height:6px; border-radius:50%;
   background:var(--p-faint); flex:0 0 auto; }
 .pr-dot.ok, .health-dot.ok { background:var(--p-ok); }
 .pr-dot.warn, .health-dot.warn { background:var(--p-warn); }
 .pr-dot.bad, .health-dot.bad { background:var(--p-err); }
+.pr-local { font-size:11px; letter-spacing:.08em; font-family:var(--p-mono);
+  color:var(--p-ok); border:1px solid var(--p-ok); border-radius:4px;
+  padding:1px 5px; white-space:nowrap; }
 
 /* ===================== conversation ===================== */
 #primus-main { padding:var(--p-topbar) 16px 0 !important; }
@@ -210,8 +221,8 @@ footer, .gradio-container footer { display:none !important; }
 #primus-chat { background:transparent !important; border:none !important; }
 #primus-chat .bubble-wrap, #primus-chat .message-wrap { background:transparent !important;
   padding:8px 0 28px !important; }
-#primus-chat .message-row { margin:14px 0 !important; padding:0 !important; }
-#primus-chat .icon-button-wrapper { opacity:.3; transition:opacity .15s ease; }
+#primus-chat .message-row { margin:16px 0 !important; padding:0 !important; }
+#primus-chat .icon-button-wrapper { opacity:.5; transition:opacity .15s ease; }
 #primus-chat .icon-button-wrapper:hover { opacity:1; }
 /* Gradio nests two `.message` elements per turn; flatten both, then dress only the outer
    one so user/assistant turns never end up with a bubble inside a bubble. */
@@ -222,15 +233,15 @@ footer, .gradio-container footer { display:none !important; }
   border-radius:0 !important; box-shadow:none !important; padding:0 !important; }
 /* assistant: no bubble — a whisper-quiet left rule and type on the page */
 #primus-chat .bot.message {
-  border-left:1px solid rgba(255,255,255,.09) !important; padding:0 0 0 14px !important; }
+  border-left:1px solid rgba(255,255,255,.09) !important; padding:0 0 0 16px !important; }
 /* user: slightly elevated surface, hairline border */
 #primus-chat .user.message {
   background:var(--p-elev) !important; border:1px solid var(--p-line-2) !important;
   border-radius:12px !important; padding:9px 13px !important; }
 #primus-chat .placeholder-content, #primus-chat .placeholder, #primus-chat .empty {
-  color:var(--p-faint) !important; }
+  color:var(--p-muted) !important; }
 #primus-chat .placeholder-content p, #primus-chat .placeholder p {
-  font-size:13.5px !important; color:var(--p-faint) !important; }
+  font-size:14px !important; line-height:1.5 !important; color:var(--p-muted) !important; }
 #primus-chat .thought, #primus-chat .metadata { color:var(--p-muted) !important; font-size:12px !important; }
 .readiness-banner {
   font-size:11.5px; color:var(--p-muted); padding:7px 12px; margin:10px 0 0;
@@ -260,32 +271,38 @@ footer, .gradio-container footer { display:none !important; }
 #cmd-preview strong { color:var(--p-text) !important; }
 #cmd-preview code { font-size:10.5px !important; }
 #approval-bar button {
-  flex:0 0 auto !important; min-width:auto !important; padding:5px 12px !important; }
+  flex:0 0 auto !important; min-width:auto !important; min-height:32px;
+  padding:5px 12px !important; }
 #primus-composer {
   display:flex !important; flex-wrap:nowrap !important; align-items:flex-end; gap:6px !important;
   background:var(--p-surface) !important; border:1px solid var(--p-line) !important;
   border-radius:12px !important; padding:5px 6px 5px 12px !important; }
-#primus-composer:focus-within { border-color:rgba(154,167,178,.30) !important; }
+#primus-composer:focus-within {
+  border-color:rgba(154,167,178,.55) !important;
+  box-shadow:0 0 0 1px rgba(154,167,178,.18) !important; }
 #primus-input { flex:1 1 auto !important; min-width:0 !important; }
 #primus-input textarea {
   background:transparent !important; border:none !important; border-radius:0 !important;
   resize:none !important; font-size:15px !important; line-height:1.5 !important;
   padding:9px 2px !important; }
 #primus-input textarea:focus { border:none !important; box-shadow:none !important; }
-#send-btn, #halt-btn { flex:0 0 auto !important; height:34px !important;
+#send-btn, #halt-btn { flex:0 0 auto !important; height:36px !important;
   padding:0 14px !important; min-width:auto !important; }
 /* Chat attachment button — same quiet chrome as Send/Halt, icon-only. */
-#attach-btn { flex:0 0 auto !important; height:34px !important; min-width:34px !important;
-  width:34px !important; padding:0 !important; background:transparent !important;
+#attach-btn { flex:0 0 auto !important; height:36px !important; min-width:36px !important;
+  width:36px !important; padding:0 !important; background:transparent !important;
   border:1px solid var(--p-line) !important; border-radius:8px !important;
   color:var(--p-muted) !important; font-size:15px !important; line-height:1 !important; }
 #attach-btn:hover { border-color:rgba(154,167,178,.42) !important; color:var(--p-text) !important;
   background:rgba(154,167,178,.06) !important; }
-#log-line { padding:0 4px !important; }
+#log-line { padding:0 4px !important; min-height:18px; }
 #log-line input, #log-line textarea {
   background:transparent !important; border:none !important; box-shadow:none !important;
-  padding:0 !important; text-align:right; font-size:10.5px !important;
-  font-family:var(--p-mono) !important; color:var(--p-faint) !important; cursor:default; }
+  padding:0 !important; text-align:left; font-size:12px !important; line-height:1.4 !important;
+  font-family:var(--p-mono) !important; color:var(--p-muted) !important; cursor:default; }
+#log-line.log-busy input, #log-line.log-busy textarea { color:var(--p-text) !important; }
+#log-line.log-ok input, #log-line.log-ok textarea { color:var(--p-ok) !important; }
+#log-line.log-err input, #log-line.log-err textarea { color:var(--p-err) !important; }
 #send-btn { background:#1E2933 !important; border:1px solid rgba(154,167,178,.26) !important;
   color:var(--p-text) !important; }
 #send-btn:hover { background:#26333F !important; border-color:rgba(154,167,178,.42) !important; }
@@ -322,8 +339,8 @@ body.primus-drawer-open #primus-drawer#primus-drawer {
   background:rgba(9,11,15,.97) !important; border-bottom:1px solid var(--p-line) !important; }
 .drawer-title { font-size:11px; font-weight:500; letter-spacing:.14em;
   text-transform:uppercase; color:var(--p-muted); }
-#drawer-close { flex:0 0 auto !important; width:28px !important; min-width:28px !important;
-  height:26px !important; padding:0 !important; background:transparent !important;
+#drawer-close { flex:0 0 auto !important; width:32px !important; min-width:32px !important;
+  height:32px !important; padding:0 !important; background:transparent !important;
   border:1px solid var(--p-line) !important; color:var(--p-muted) !important;
   font-size:12px !important; }
 #drawer-close:hover { color:var(--p-text) !important; background:#11151C !important; }
@@ -336,10 +353,10 @@ body.primus-drawer-open #primus-drawer#primus-drawer {
   font-size:11px !important; font-weight:500 !important; letter-spacing:.11em;
   text-transform:uppercase; color:var(--p-muted) !important; }
 .drawer-sec > button:hover span, .drawer-sec .label-wrap:hover span { color:var(--p-text) !important; }
-.drawer-body { padding:0 16px 16px !important; gap:9px !important; }
+.drawer-body { padding:0 16px 18px !important; gap:12px !important; }
 .drawer-body > * { min-width:0 !important; }
-.drawer-note { font-size:11px !important; color:var(--p-faint) !important; line-height:1.45; }
-.drawer-note p, .drawer-note em { font-size:11px !important; color:var(--p-faint) !important; }
+.drawer-note { font-size:12px !important; color:var(--p-muted) !important; line-height:1.5; }
+.drawer-note p, .drawer-note em { font-size:12px !important; color:var(--p-muted) !important; }
 .drawer-sub { border:1px solid var(--p-line) !important; border-radius:8px !important;
   background:var(--p-surface) !important; }
 .drawer-sub > button, .drawer-sub .label-wrap { padding:8px 10px !important; }
@@ -359,38 +376,44 @@ body.primus-drawer-open #primus-drawer#primus-drawer {
    two-to-a-line; force one chat per line so the list reads as a list. */
 #chat-list .wrap { display:flex !important; flex-direction:column !important;
   flex-wrap:nowrap !important; align-items:stretch !important; gap:2px !important; }
-#chat-list label { display:flex; width:100%; align-items:center; gap:8px;
+#chat-list .wrap label { display:flex; width:100%; align-items:center; gap:8px;
   border:1px solid transparent !important; border-radius:8px !important;
-  padding:7px 9px !important; background:transparent !important;
+  min-height:36px; padding:8px 10px !important; background:transparent !important;
   font-size:13px !important; color:var(--p-muted) !important; transition:background .12s ease; }
-#chat-list label:hover { background:#11151C !important; color:var(--p-text) !important; }
-#chat-list label:has(input:checked) { background:var(--p-elev) !important;
+#chat-list .wrap label:focus-within, #mode-radio .wrap label:focus-within {
+  outline:1px solid rgba(154,167,178,.72); outline-offset:2px; }
+#chat-list .wrap label:hover { background:#11151C !important; color:var(--p-text) !important; }
+#chat-list .wrap label:has(input:checked) { background:var(--p-elev) !important;
   border-color:var(--p-line-2) !important; color:var(--p-text) !important; }
 #chat-list input { width:0 !important; height:0 !important; opacity:0 !important;
   position:absolute !important; }
 #proj-status, #bg-submit-status, #tasks-status, #code-submit-status, #kb-status,
 #web-status, #voice-status, #typing-status {
-  font-size:11px !important; color:var(--p-muted) !important; }
-#proj-status p, #kb-status p, #web-status p, #voice-status p { font-size:11px !important;
+  font-size:12px !important; color:var(--p-muted) !important; }
+#proj-status p, #kb-status p, #web-status p, #voice-status p { font-size:12px !important;
   color:var(--p-muted) !important; }
 
 /* mode radio → segmented control */
 #mode-radio .wrap { display:flex !important; gap:4px !important; }
-#mode-radio label { flex:1 1 0; justify-content:center; border:1px solid var(--p-line) !important;
-  border-radius:8px !important; padding:7px 8px !important; font-size:12px !important;
+#mode-radio .wrap label { flex:1 1 0; justify-content:center; border:1px solid var(--p-line) !important;
+  border-radius:8px !important; min-height:36px; padding:8px 8px !important; font-size:12.5px !important;
   color:var(--p-muted) !important; background:var(--p-surface) !important; }
-#mode-radio label:has(input:checked) { background:var(--p-elev-2) !important;
+#mode-radio .wrap label:has(input:checked) { background:var(--p-elev-2) !important;
   border-color:var(--p-line-2) !important; color:var(--p-text) !important; }
 #mode-radio input { width:0 !important; height:0 !important; opacity:0 !important;
   position:absolute !important; }
 
 /* ===================== drawer panels (host-rendered HTML) ===================== */
-.status-bar { font-family:var(--p-mono); font-size:10.5px; line-height:1.5;
+.status-bar { font-family:var(--p-mono); font-size:12px; line-height:1.45;
   color:var(--p-muted); letter-spacing:.01em; padding:8px 10px;
-  border:1px solid var(--p-line); border-radius:8px; background:var(--p-surface); }
-.think-panel { font-family:var(--p-mono); font-size:10.5px; max-height:180px; overflow-y:auto;
+  border:1px solid var(--p-line); border-radius:8px; background:var(--p-surface);
+  display:flex; flex-direction:column; gap:4px; }
+.status-line { display:block; }
+.status-k { display:inline-block; min-width:58px; margin-right:6px;
+  font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--p-muted); }
+.think-panel { font-family:var(--p-mono); font-size:12px; max-height:200px; overflow-y:auto;
   border:1px solid var(--p-line); border-radius:8px; padding:8px 10px; background:var(--p-surface); }
-.think-panel.empty { color:var(--p-faint); }
+.think-panel.empty { color:var(--p-muted); }
 .think-step { display:flex; gap:8px; align-items:baseline; padding:3px 0;
   border-bottom:1px solid rgba(255,255,255,.035); }
 .think-step:last-child { border-bottom:none; }
@@ -399,19 +422,19 @@ body.primus-drawer-open #primus-drawer#primus-drawer {
 .think-step.done .think-title { color:var(--p-accent); }
 .think-step.error .think-title { color:var(--p-err); }
 .think-icon { width:12px; flex:0 0 auto; color:var(--p-faint); }
-.think-ts { margin-left:auto; color:var(--p-faint); font-size:9.5px; }
-.think-detail { width:100%; padding-left:20px; font-size:9.5px; color:var(--p-faint); }
+.think-ts { margin-left:auto; color:var(--p-faint); font-size:11px; }
+.think-detail { width:100%; padding-left:20px; font-size:11px; color:var(--p-muted); }
 
-.bg-panel { font-family:var(--p-mono); font-size:10.5px; display:flex; flex-direction:column;
+.bg-panel { font-family:var(--p-mono); font-size:12px; display:flex; flex-direction:column;
   gap:6px; max-height:240px; overflow-y:auto; }
-.bg-panel.empty { color:var(--p-faint); padding:6px 2px; }
+.bg-panel.empty { color:var(--p-muted); padding:6px 2px; }
 .bg-task { border:1px solid var(--p-line); border-left:2px solid var(--p-line-2);
   border-radius:8px; padding:7px 9px; background:var(--p-surface); }
 .bg-task.running { border-left-color:var(--p-accent); }
 .bg-task.completed { border-left-color:var(--p-ok); }
 .bg-task.failed { border-left-color:var(--p-err); }
 .bg-task.cancelled { opacity:.55; }
-.bg-status { color:var(--p-muted); text-transform:uppercase; letter-spacing:.08em; font-size:9.5px; }
+.bg-status { color:var(--p-muted); text-transform:uppercase; letter-spacing:.08em; font-size:11px; }
 .bg-task.running .bg-status { color:var(--p-text); }
 .bg-task.completed .bg-status { color:var(--p-ok); }
 .bg-task.failed .bg-status { color:var(--p-err); }
@@ -484,8 +507,17 @@ body.primus-drawer-open #primus-drawer#primus-drawer {
   #primus-dock { padding:10px 10px 12px !important; }
   .pr-chat { display:none; }
 }
+.sr-only {
+  position:absolute !important; width:1px !important; height:1px !important; padding:0 !important;
+  margin:-1px !important; overflow:hidden !important; clip:rect(0,0,0,0) !important;
+  white-space:nowrap !important; border:0 !important; }
+.skip-link {
+  position:absolute; left:8px; top:8px; z-index:80; transform:translateY(-120%);
+  padding:6px 10px; border-radius:8px; border:1px solid var(--p-line-2);
+  background:var(--p-elev); color:var(--p-text); font-size:12px; text-decoration:none; }
+.skip-link:focus { transform:none; outline:1px solid rgba(154,167,178,.72); outline-offset:2px; }
 @media (prefers-reduced-motion: reduce) {
-  #primus-drawer, #primus-scrim { transition:none !important; }
+  #primus-drawer, #primus-scrim, .gradio-container button { transition:none !important; }
 }
 """
 
@@ -512,12 +544,109 @@ def _keyboard_js() -> str:
     body.appendChild(scrim);
   }}
   const isOpen = () => body.classList.contains('primus-drawer-open');
+  const control = (id) => {{
+    const root = document.getElementById(id);
+    if (!root) return null;
+    if (root.matches('button, input, textarea, select, a')) return root;
+    return root.querySelector('button, input, textarea, select, a') || root;
+  }};
+  const stamp = (id, attrs) => {{
+    const el = control(id);
+    if (!el) return;
+    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+  }};
+  const drawerEl = document.getElementById('primus-drawer');
   const setDrawer = (open) => {{
-    body.classList.toggle('primus-drawer-open', !!open);
-    const btn = document.getElementById('menu-btn');
-    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const was = isOpen();
+    const next = !!open;
+    body.classList.toggle('primus-drawer-open', next);
+    const btn = control('menu-btn');
+    if (btn) {{
+      btn.setAttribute('aria-expanded', next ? 'true' : 'false');
+      btn.setAttribute('aria-label', next ? 'Close menu' : 'Open menu');
+    }}
+    if (drawerEl) {{
+      if (next) drawerEl.removeAttribute('inert');
+      else drawerEl.setAttribute('inert', '');
+    }}
+    if (next && !was) control('drawer-close')?.focus();
+    else if (!next && was) btn?.focus();
   }};
   const focusInput = () => document.querySelector('#primus-input textarea')?.focus();
+  stamp('menu-btn', {{
+    'aria-label': 'Open menu', 'aria-controls': 'primus-drawer',
+    'aria-expanded': 'false', title: 'Menu (Ctrl+M)',
+  }});
+  stamp('drawer-close', {{'aria-label': 'Close menu', title: 'Close (Esc)'}});
+  stamp('attach-btn', {{'aria-label': 'Attach a document', title: 'Attach a document'}});
+  stamp('send-btn', {{'aria-label': 'Send message', title: 'Send (Enter)'}});
+  stamp('halt-btn', {{'aria-label': 'Stop the current reply', title: 'Stop the current reply'}});
+  stamp('hist-prev', {{title: 'Last command (Up in an empty box)'}});
+  stamp('clear-btn', {{title: 'Clear this chat (Ctrl+L)'}});
+  stamp('hide-tray-btn', {{title: 'Hide to the tray (Ctrl+H)'}});
+  document.querySelectorAll('#approval-bar button').forEach((b) => {{
+    const t = (b.textContent || '').trim();
+    const tips = {{
+      'Execute': 'Run the highlighted command once',
+      'Approve all': 'Run the queued safe commands',
+      'Modify': 'Edit the command in the message box',
+      'Dismiss': 'Drop the queued command',
+    }};
+    if (tips[t]) b.title = tips[t];
+  }});
+  const field = control('primus-input');
+  if (field) {{
+    field.setAttribute('aria-label', 'Message');
+    field.setAttribute('title', 'Enter sends. Shift+Enter adds a line.');
+  }}
+  const convo = document.getElementById('primus-chat');
+  if (convo) convo.setAttribute('aria-label', 'Conversation');
+  if (drawerEl) {{
+    drawerEl.setAttribute('role', 'dialog');
+    drawerEl.setAttribute('aria-label', 'Menu');
+    drawerEl.setAttribute('inert', '');
+  }}
+  if (!document.getElementById('primus-skip')) {{
+    const skip = document.createElement('a');
+    skip.id = 'primus-skip';
+    skip.className = 'skip-link';
+    skip.href = '#primus-input';
+    skip.textContent = 'Skip to message';
+    skip.addEventListener('click', (ev) => {{ ev.preventDefault(); focusInput(); }});
+    body.insertBefore(skip, body.firstChild);
+  }}
+  if (!document.getElementById('primus-live')) {{
+    const live = document.createElement('div');
+    live.id = 'primus-live';
+    live.className = 'sr-only';
+    live.setAttribute('aria-live', 'polite');
+    live.setAttribute('aria-atomic', 'true');
+    body.appendChild(live);
+  }}
+  const logRoot = document.getElementById('log-line');
+  const logBox = control('log-line');
+  let lastNote = '';
+  const syncLog = () => {{
+    if (!logBox || !logRoot) return;
+    const v = (logBox.value || '').trim();
+    logRoot.classList.remove('log-busy', 'log-ok', 'log-err');
+    if (!v) return;
+    if (/\\b(error|fail|failed|couldn't|cannot|can't|incomplete|paused|unavailable)\\b/i.test(v))
+      logRoot.classList.add('log-err');
+    else if (/\\b(working|typing|thinking|queued|loading|handing)\\b/i.test(v))
+      logRoot.classList.add('log-busy');
+    else logRoot.classList.add('log-ok');
+    if (v !== lastNote) {{
+      lastNote = v;
+      const live = document.getElementById('primus-live');
+      if (live) live.textContent = v;
+    }}
+  }};
+  if (logBox) {{
+    logBox.setAttribute('aria-label', 'Activity');
+    logBox.addEventListener('input', syncLog);
+    setInterval(syncLog, 500);
+  }}
 
   // Keep the conversation pinned to the newest turn: Gradio only sticks to the bottom when you
   // are already there, so a long transcript otherwise opens at the top and a stream you started
@@ -537,10 +666,14 @@ def _keyboard_js() -> str:
   if (chat && 'MutationObserver' in window) {{
     let queued = false;
     new MutationObserver(() => {{
-      if (!stick || queued) return;
+      if (!stick) return;
+      // Pin before paint. A deferred pin lets Gradio flash the transcript to the
+      // top for a frame between reply updates.
+      pin();
+      if (queued) return;
       queued = true;
       requestAnimationFrame(() => {{ queued = false; if (stick) pin(); }});
-    }}).observe(chat, {{ childList: true, subtree: true, characterData: true }});
+    }}).observe(chat, {{ childList: true, subtree: true }});
   }}
   setTimeout(arm, 250);
   setTimeout(arm, 1200);
@@ -561,6 +694,15 @@ def _keyboard_js() -> str:
   }});
 
   document.addEventListener('keydown', (e) => {{
+    if (e.key === 'Tab' && isOpen() && drawerEl) {{
+      const items = [...drawerEl.querySelectorAll('button, input, textarea, select, a[href]')]
+        .filter((el) => !el.disabled && el.getClientRects().length);
+      if (items.length) {{
+        const first = items[0], last = items[items.length - 1];
+        if (e.shiftKey && document.activeElement === first) {{ e.preventDefault(); last.focus(); }}
+        else if (!e.shiftKey && document.activeElement === last) {{ e.preventDefault(); first.focus(); }}
+      }}
+    }}
     if (!(e.ctrlKey || e.metaKey)) {{
       if (e.key === 'ArrowUp' && e.target?.matches('#primus-input textarea') && !e.target.value) {{
         e.preventDefault(); document.getElementById('hist-prev')?.click();
@@ -595,7 +737,10 @@ HELP_TEXT = """
 | `Ctrl+E` | Execute mode (auto-run safe + review-tier) |
 | `Ctrl+H` | Hide to tray |
 | `Esc` | Close the menu — or hide to tray when it's already closed |
-| `↑` | Previous command |
+| `↑` | Previous command, when the message box is empty |
+| `Tab` | Move through the open menu. Shift+Tab moves back |
+
+The line under the message box reports what is happening: working, ready, saved, or an error.
 
 **Command safety:** `ls`, `pwd`, `cat`, `tree`, `git status`, etc. auto-run. `rm`, `sudo`, `mv` queue for approval.
 
@@ -860,19 +1005,131 @@ def prewarm_whisper() -> None:
 
 
 # --- Project/chat UI helpers (presentation only) ------------------------------------
-def _typing_slices(text: str, *, max_steps: int = 130) -> list[int]:
-    """Cut points for a fast typewriter reveal of `text`.
+# Replies shorter than this paint in one frame. Longer ones reveal in a handful of
+# frames that each end on a paragraph, sentence, or word — never one character at a time.
+_TYPING_INSTANT_CHARS = 240
+_TYPING_MAX_FRAMES = 6
 
-    Short replies reveal ~1 char/tick (smooth, fast); long replies reveal in bigger chunks
-    so the whole animation stays well under a second regardless of length. UI-only helper.
-    """
+
+def _prefix_markdown_closed(text: str, cut: int) -> bool:
+    """True when `text[:cut]` has no half-open fence, bold, or inline code."""
+    head = text[:cut]
+    if head.count("```") % 2:
+        return False
+    body = head.replace("```", "")
+    if body.count("**") % 2 or body.count("__") % 2 or body.count("`") % 2:
+        return False
+    return True
+
+
+def _advance_to_closed(text: str, cut: int) -> int:
+    """Move `cut` forward until markdown markers are closed, or give up nearby."""
     n = len(text)
-    if n <= 1:
+    cut = max(0, min(int(cut), n))
+    if text.count("```", 0, cut) % 2 == 1:
+        close = text.find("```", cut)
+        if close != -1 and close - cut <= 1200:
+            cut = close + 3
+            if cut < n and text[cut] == "\n":
+                cut += 1
+    if _prefix_markdown_closed(text, cut):
+        return cut
+    for j in range(cut, min(n, cut + 200)):
+        if text[j] in " \n" and _prefix_markdown_closed(text, j + 1):
+            return j + 1
+    return n if n - cut <= 200 else cut
+
+
+def _spread_cuts(points: list[int], k: int) -> list[int]:
+    """Pick up to `k` points, spread across the list, in order."""
+    if k <= 0 or not points:
+        return []
+    if len(points) <= k:
+        return list(points)
+    if k == 1:
+        return [points[len(points) // 2]]
+    out: list[int] = []
+    last = -1
+    for i in range(k):
+        idx = round(i * (len(points) - 1) / (k - 1))
+        if idx != last:
+            out.append(points[idx])
+            last = idx
+    return out
+
+
+def _next_typing_cut(text: str, start: int, target: int) -> int:
+    """Next stable cut after `start`, about `target` characters ahead."""
+    n = len(text)
+    if text.count("```", 0, start) % 2 == 1:
+        return _advance_to_closed(text, start + 1)
+    lo = min(n, start + max(64, target // 2))
+    hi = min(n, start + target + target // 2)
+    if lo >= n:
+        return n
+    for sep in ("\n\n", "\n", ". ", "! ", "? ", " "):
+        pos = text.rfind(sep, lo, hi)
+        while pos != -1:
+            cut = pos + len(sep)
+            if _prefix_markdown_closed(text, cut):
+                return cut
+            pos = text.rfind(sep, lo, pos)
+    if _prefix_markdown_closed(text, hi):
+        return hi
+    return _advance_to_closed(text, hi)
+
+
+def _typing_slices(text: str, *, max_steps: int = _TYPING_MAX_FRAMES) -> list[int]:
+    """Cut points for a short typewriter reveal of `text`.
+
+    The reply is already complete. A few frames that land on paragraph or word
+    boundaries read as a stream without rebuilding the chat once per character.
+    Short replies are a single frame. UI-only helper.
+    """
+    n = len(text or "")
+    if n == 0:
+        return []
+    if n <= _TYPING_INSTANT_CHARS:
         return [n]
-    chunk = max(1, -(-n // max_steps))  # ceil(n / max_steps)
-    cuts = list(range(chunk, n, chunk))
-    cuts.append(n)
+    steps = max(2, min(int(max_steps or _TYPING_MAX_FRAMES), _TYPING_MAX_FRAMES))
+    breaks = [m.end() for m in re.finditer(r"\n\s*\n", text) if 40 < m.end() < n]
+    picked = _spread_cuts(breaks, steps - 1)
+    cuts: list[int] = []
+    if picked:
+        for raw in picked:
+            cut = _advance_to_closed(text, raw)
+            if 0 < cut < n and (not cuts or cut > cuts[-1]):
+                cuts.append(cut)
+    else:
+        target = max(120, -(-n // steps))
+        i = 0
+        while i < n and len(cuts) < steps - 1:
+            if n - i <= target:
+                break
+            cut = _next_typing_cut(text, i, target)
+            if cut <= i or cut >= n:
+                break
+            cuts.append(cut)
+            i = cut
+    if not cuts or cuts[-1] != n:
+        cuts.append(n)
     return cuts
+
+
+def _typing_frame_delay(speed: object, frames: int) -> float:
+    """Pause between reveal frames. `speed` is 1 (fast) … 100 (slow).
+
+    This is a pace for the whole reveal, not milliseconds per character.
+    Default 18 finishes in about a fifth of a second; the slow end stays under a second.
+    """
+    try:
+        pace = int(speed)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        pace = 18
+    pace = max(1, min(pace, 100))
+    gaps = max(1, int(frames) - 1)
+    budget = 0.04 + (pace - 1) * (0.86 / 99.0)
+    return min(0.12, budget / gaps)
 
 
 def _chat_choices() -> list[tuple[str, str]]:
@@ -950,7 +1207,10 @@ def _right_status_md() -> str:
 
 
 # Quiet empty state for the conversation — one line, no marketing hero.
-EMPTY_STATE = "Ask anything. `/help` for commands, the menu for everything else."
+EMPTY_STATE = (
+    "Ask a question, or describe a task.\n"
+    "Menu holds chats, mode, and status. /help lists commands."
+)
 
 # How long the top bar may reuse the last Ollama probe when it is only ticking, not reacting.
 _TOPBAR_TTL = 20.0
@@ -980,24 +1240,82 @@ def _status_probe(max_age: float = 0.0) -> tuple[dict, bool]:
     return details, ok
 
 
+def _model_chip(name: str) -> tuple[str, str]:
+    """Short top-bar model label, plus the full tag for the tooltip.
+
+    Session tokens such as ``instant`` and ``fast-tool`` are not models. Those
+    fall back to the configured daily model.
+    """
+    raw = (name or "").strip()
+    if raw.lower() in {"", "instant", "local", "fast-tool", "user-path", "path-mode", "access"}:
+        raw = str(_host.CFG.get("model", getattr(_host, "DEFAULT_MODEL", "")) or "")
+    low = raw.lower()
+    if "32b" in low:
+        short = "32B"
+    elif "7b" in low:
+        short = "7B"
+    else:
+        short = (raw.split(":")[0] or "model")[:18]
+    return short, raw or "model"
+
+
 def _topbar_html(max_age: float = 0.0) -> str:
     """Thin top bar: wordmark, one live status dot (online / model), active chat name."""
     ollama, ok = _status_probe(max_age)
     dot = "ok" if ok else ("warn" if ollama.get("reachable") else "bad")
-    model = str(_host.CFG.get("model", _host.DEFAULT_MODEL)).split(":")[0]
+    if dot == "ok":
+        state = "Ready"
+    elif dot == "warn":
+        state = "Ollama is up. Setup is incomplete"
+    else:
+        state = "Offline"
+    try:
+        active = str(getattr(_host.PrimusSession, "active_model", "") or "")
+    except Exception:  # noqa: BLE001
+        active = ""
+    short, full = _model_chip(active)
     try:
         chat = _host.ChatProjects.get(_host.ChatProjects.active_id()).get("name", "General Chat")
     except Exception:  # noqa: BLE001
         chat = "General Chat"
     title = str(ollama.get("message") or ("online" if ok else "setup incomplete"))
+    local = ""
+    try:
+        if bool(_host.CFG.get("local_only", True)):
+            local = (
+                '<span class="pr-local" title="Local only — Ollama 7B for normal turns, '
+                '32B for complex work. External brain is off">LOCAL</span>'
+            )
+    except Exception:  # noqa: BLE001
+        local = ""
     return (
         '<div class="pr-brand">'
         '<span class="pr-mark">PRIMUS</span>'
-        f'<span class="pr-status" title="{_esc(title)}">'
-        f'<span class="pr-dot {dot}"></span>{_esc(model)}</span>'
-        f'<span class="pr-chat">{_esc(chat)}</span>'
+        f'<span class="pr-status" title="{_esc(title)} · model { _esc(full) }">'
+        f'<span class="pr-dot {dot}" aria-hidden="true"></span>'
+        f'<span class="sr-only">{_esc(state)}. Model {_esc(full)}. </span>'
+        f'{_esc(short)}</span>'
+        f"{local}"
+        f'<span class="pr-chat" title="Active chat: {_esc(chat)}">{_esc(chat)}</span>'
         "</div>"
     )
+
+
+def _status_bar_html() -> str:
+    """Drawer status. Plain ``build_status_bar`` stays text for /status and tools."""
+    parts: list[str] = []
+    for line in str(_host.build_status_bar()).split("\n\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if ": " in line:
+            key, rest = line.split(": ", 1)
+            parts.append(
+                f'<span class="status-line"><span class="status-k">{_esc(key)}</span>{_esc(rest)}</span>'
+            )
+        else:
+            parts.append(f'<span class="status-line">{_esc(line)}</span>')
+    return f'<div class="status-bar">{"".join(parts)}</div>'
 
 
 def _topbar_tick() -> Any:
@@ -1342,7 +1660,7 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
     default_mode = settings.get("execution_mode", "execute")
     compact = bool(_host.CFG.get("compact_mode", False))
     # The conversation fills the viewport between the top bar and the composer dock.
-    chat_h = "calc(100vh - 168px)" if compact else "calc(100vh - 184px)"
+    chat_h = "calc(100vh - 188px)" if compact else "calc(100vh - 204px)"
     _host.PrimusSession.mode = _host.ExecutionMode(default_mode)
 
     _host.PrimusSession.last_health = _host.get_ollama_details().get("message", "")
@@ -1441,7 +1759,7 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
                     chat_selector = gr.Radio(
                         choices=_chat_choices(),
                         value=_host.ChatProjects.active_id(),
-                        label="",
+                        label="Switch chat",
                         elem_id="chat-list",
                     )
                     proj_status = gr.Markdown("", elem_id="proj-status")
@@ -1474,12 +1792,22 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
                     mode_radio = gr.Radio(
                         [("Suggest", "suggest"), ("Execute", "execute")],
                         value=default_mode,
-                        label="",
+                        label="How commands run",
+                        info=(
+                            "Suggest queues risky commands for approval. "
+                            "Execute runs safe and review-tier commands, and still queues anything dangerous."
+                        ),
                         elem_id="mode-radio",
                     )
+                    local_only_cb = gr.Checkbox(
+                        label="Local only",
+                        info="Ollama only. 7B for normal turns, 32B for complex work. External brain stays off.",
+                        value=bool(_host.CFG.get("local_only", True)),
+                        elem_id="local-only-toggle",
+                    )
                     gr.Markdown(
-                        "_Suggest queues review-tier commands. Execute runs safe + review-tier "
-                        "and queues anything dangerous._",
+                        "_When a command needs approval, Execute, Approve all, Modify, and Dismiss "
+                        "appear above the message box._",
                         elem_classes=["drawer-note"],
                     )
                     wf_dd = gr.Dropdown(
@@ -1554,11 +1882,16 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
             # ---- 3 · Status ----
             with gr.Accordion("Status", open=False, elem_classes=["drawer-sec"]):
                 with gr.Column(elem_classes=["drawer-body"]):
-                    status_bar = gr.HTML(f'<div class="status-bar">{_host.build_status_bar()}</div>')
+                    gr.Markdown(
+                        "_Models, connections, and this machine. "
+                        "The line under the message box reports the current action._",
+                        elem_classes=["drawer-note"],
+                    )
+                    status_bar = gr.HTML(_status_bar_html())
                     right_status_md = gr.Markdown(_right_status_md())
                     with gr.Row():
-                        right_refresh_btn = gr.Button("Refresh status", size="sm")
-                        refresh_btn = gr.Button("Refresh ticker", size="sm")
+                        right_refresh_btn = gr.Button("Refresh details", size="sm")
+                        refresh_btn = gr.Button("Refresh status line", size="sm")
                     setup_dashboard = gr.HTML(_host.render_setup_dashboard_html())
                     model_choices = _model_dropdown_choices()
                     primus_model_dd = gr.Dropdown(
@@ -1575,8 +1908,8 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
                     )
                     fast_model_dd = gr.Dropdown(
                         model_choices,
-                        value=_host.CFG.get("fast_fallback_model", "llama3.2:3b"),
-                        label="Fast model (small/quantized)",
+                        value=_host.CFG.get("fast_fallback_model", "qwen2.5:7b"),
+                        label="Fast model",
                         allow_custom_value=True,
                     )
                     apply_models_btn = gr.Button("Apply models", variant="primary", size="sm")
@@ -1824,8 +2157,8 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
                                 label="Pin on top", value=bool(settings.get("always_on_top"))
                             )
                             with gr.Row():
-                                hide_btn = gr.Button("Tray", size="sm", elem_id="hide-tray-btn")
-                                win_btn = gr.Button("Win", size="sm")
+                                hide_btn = gr.Button("Hide to tray", size="sm", elem_id="hide-tray-btn")
+                                win_btn = gr.Button("Show window", size="sm")
                     with gr.Accordion("Response display", open=False, elem_classes=["drawer-sub"]):
                         with gr.Column(elem_classes=["drawer-body"]):
                             typing_effect_cb = gr.Checkbox(
@@ -1909,7 +2242,7 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
                         elem_id="inbox-list",
                     )
                     inbox_read = gr.Markdown(
-                        "_Select a message above._", elem_id="inbox-read"
+                        "Select a message to read it here.", elem_id="inbox-read"
                     )
                     inbox_reply = gr.Textbox(
                         label="Draft reply", lines=3,
@@ -2034,7 +2367,7 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
                     size="sm",
                 )
                 msg = gr.Textbox(
-                    placeholder="Ask Primus…  (/help)",
+                    placeholder="Message Primus…  Enter to send, Shift+Enter for a new line",
                     show_label=False,
                     elem_id="primus-input",
                     container=False,
@@ -2046,8 +2379,13 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
             # Quiet activity line under the composer — the target of every handler's note
             # ("Working…", "Typing…", "Ready", errors) that used to be a labelled Log box.
             log_tb = gr.Textbox(
-                value="", show_label=False, interactive=False, max_lines=1,
-                container=False, elem_id="log-line",
+                value="",
+                placeholder="Activity — working, ready, or an error",
+                show_label=False,
+                interactive=False,
+                max_lines=1,
+                container=False,
+                elem_id="log-line",
             )
 
         export_file = gr.File(visible=False)
@@ -2063,7 +2401,7 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
         mode_exec_btn = gr.Button("Execute", elem_id="mode-exec", visible=False)
 
         def _status():
-            return gr.update(value=f'<div class="status-bar">{_host.build_status_bar()}</div>')
+            return gr.update(value=_status_bar_html())
 
         def _think():
             return gr.update(value=_host.render_thinking_html())
@@ -2893,7 +3231,7 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
                 pass
 
             # --- Final polish: guarantee clean, human-readable text reaches the chat ---
-            answer = _host.polish_response(answer) or "That's sorted. What's next?"
+            answer = _host.polish_response(answer) or "I didn't get a result back from that."
 
             # --- Proactive anticipation: optionally offer one smart next step ---
             # (Skip for meta/preference confirmations — they're complete on their own.)
@@ -2916,19 +3254,35 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
             base = _host.sanitize_chat_history(base)
             cr, cm = _cmd_ui()
 
-            # Stream the assistant reply character-by-character so it 'types' into the chat.
-            # Purely presentational: the full answer is persisted once, after the animation.
-            if bool(_host.CFG.get("typing_effect", True)) and answer:
-                # Slider value (1 fast … 100 slow) maps directly to ms-per-character.
-                delay = max(0.0, float(_host.CFG.get("typing_speed", 18)) / 1000.0)
-                for cut in _typing_slices(answer):
+            # Brief reveal of a reply that is already complete. One frame for a short
+            # answer; a few stable chunks for a long one. Only the transcript moves —
+            # status, thoughts, and the activity line stay as the ack left them, so the
+            # chrome does not repaint on every frame. Persisted once, after the animation.
+            slices = (
+                _typing_slices(answer)
+                if bool(_host.CFG.get("typing_effect", True)) and answer
+                else []
+            )
+            if len(slices) > 1:
+                delay = _typing_frame_delay(_host.CFG.get("typing_speed", 18), len(slices))
+                for cut in slices[:-1]:
                     partial = base + [{"role": "assistant", "content": answer[:cut]}]
-                    # Don't reset the input while streaming — send gr.update() (no value) so any
-                    # text the user pre-types survives, and force interactive=True so the box
-                    # stays editable. Only the initial ack yield clears the submitted message.
-                    yield (_paint(partial), gr.update(interactive=True), cr, cm, "Typing…",
-                           _status(), _think(), [])
-                    if delay and cut < len(answer) and not _host.PrimusSession.is_cancelled():
+                    # Don't reset the input while streaming — gr.update() with no value keeps
+                    # anything the user pre-typed, and interactive=True keeps the box editable.
+                    # The other outputs are left untouched (the ack yield already set them).
+                    yield (
+                        _paint(partial),
+                        gr.update(interactive=True),
+                        gr.update(),
+                        gr.update(),
+                        gr.update(),
+                        gr.update(),
+                        gr.update(),
+                        gr.update(),
+                    )
+                    if _host.PrimusSession.is_cancelled():
+                        break
+                    if delay:
                         time.sleep(delay)
 
             final = _host.sanitize_chat_history(base + [{"role": "assistant", "content": answer}])
@@ -3040,7 +3394,7 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
                 msg + fast_note,
                 _host.render_setup_dashboard_html(),
                 _host.render_setup_status_markdown(),
-                f'<div class="status-bar">{_host.build_status_bar()}</div>',
+                _status_bar_html(),
             )
 
         def ui_apply_gpu(prefer, backend, layers, hsa):
@@ -3535,6 +3889,21 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
         voice_outs = outs + ([mic, voice_status] if mic is not None else [])
         mode_radio.change(set_mode, [mode_radio], [log_tb])
 
+        def set_local_only(on):
+            enabled = bool(on)
+            _host.CFG["local_only"] = enabled
+            _host.save_config_file()
+            note = (
+                "Local only — Ollama 7B and 32B. External brain is off."
+                if enabled
+                else "External brain is available again."
+            )
+            return note, _topbar_html(), _status()
+
+        local_only_cb.change(
+            set_local_only, [local_only_cb], [log_tb, topbar, status_bar]
+        )
+
         def _mode_hotkey(mode):
             """Ctrl+S / Ctrl+E: the hidden buttons the load-JS clicks now actually set the mode."""
             return gr.update(value=mode), set_mode(mode)
@@ -3712,7 +4081,7 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
             table, rows, note = _host.inbox_list_ui(query)
             status = _host.inbox_status_markdown()
             action = f"_{note}_" if note else ""
-            return table, rows, status, action, "_Select a message above._", ""
+            return table, rows, status, action, "Select a message to read it here.", ""
 
         def ui_inbox_connect():
             msg = _host.inbox_connect_ui()
@@ -3821,7 +4190,10 @@ def build_ui(graphs: dict[str, Any], model_name: str) -> tuple[Any, Any, str]:
             _host.save_config_file()
             if not _host.CFG["typing_effect"]:
                 return "Typewriter effect off — responses appear all at once."
-            return f"Typewriter effect on — speed {_host.CFG['typing_speed']} (~{_host.CFG['typing_speed']} ms/char)."
+            return (
+                f"Typewriter effect on — speed {_host.CFG['typing_speed']} "
+                "(1 fast · 100 slow). Short replies appear at once."
+            )
 
         apply_display_btn.click(
             ui_apply_display, [typing_effect_cb, typing_speed_slider], [typing_status]

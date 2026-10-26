@@ -1403,16 +1403,26 @@ def _save_conversation_archive(items: list[dict]) -> None:
 
 
 def _expand_recall_query(message: str, history: Optional[list] = None) -> str:
-    """Enrich search query with recent user turns for better cross-session recall."""
-    parts = [message.strip()]
-    if history:
-        for item in history[-4:]:
-            if isinstance(item, dict) and item.get("role") == "user":
-                parts.append(str(item.get("content", ""))[:120])
-    # Boost project keywords if present
-    low = message.lower()
+    """Search with the current request plus the short session topic and entities.
+
+    Older user turns are not appended — that pulled memories from a previous
+    subject into this one. `history` stays in the signature for callers.
+    """
+    del history  # recalled via the session state, not by replaying the transcript
+    parts = [(message or "").strip()]
+    try:
+        topic = str(getattr(_host.PrimusSession, "current_topic", "") or "").strip()
+        if topic and topic.lower() not in parts[0].lower():
+            parts.append(topic)
+        for ent in list(getattr(_host.PrimusSession, "recent_entities", []) or [])[:4]:
+            ent = str(ent).strip()
+            if ent and ent.lower() not in " ".join(parts).lower():
+                parts.append(ent)
+    except Exception:  # noqa: BLE001
+        pass
+    low = (message or "").lower()
     for proj in _host.TAG_KEYWORDS.get("project", ()):
-        if proj in low:
+        if proj in low and proj not in " ".join(parts).lower():
             parts.append(proj)
     return " ".join(p for p in parts if p)[:400]
 
@@ -1445,32 +1455,32 @@ def _detect_conversation_topic(message: str, history: Optional[list]) -> str:
 
 
 def build_conversation_focus(message: str, history: Optional[list] = None) -> str:
-    """Compact, high-priority short-term state block that keeps Primus on the current thread.
+    """Compact session state for the prompt. No model call and no embeddings.
 
-    Pure-Python (no LLM, no embeddings) so it's free to inject on every path. Anchors the
-    model to the current topic + the last couple of turns and explicitly forbids drifting.
+    Topic, entities, and preferences come from the per-turn state when it has
+    already been updated. Otherwise a local guess fills the topic in.
     """
-    recent = [
+    from primus.core.session_state import SessionState, render_focus  # noqa: PLC0415
+
+    recent_msgs = [
         h for h in (history or [])
         if isinstance(h, dict) and h.get("content") and not h.get("metadata")
     ]
-    topic = _detect_conversation_topic(message, history)
-    _host.PrimusSession.current_topic = topic
-    lines = ["## CURRENT FOCUS — highest priority; stay on this thread"]
-    if recent:
-        lines.append("Recent turns (most recent last):")
-        for h in recent[-4:]:
-            who = _OPERATOR["label"] if h.get("role") == "user" else "Primus"
-            lines.append(f"  {who}: {str(h.get('content', '')).strip()[:200]}")
-    lines.append(f"{_OPERATOR['possessive']} current request: {message.strip()[:220]}")
-    if topic:
-        lines.append(f"Active topic: **{topic}**")
-    lines.append(
-        "Stay focused on this request and finish it. Treat it as a continuation of the recent "
-        "turns above when related. Do NOT switch subjects, re-open old topics, or go off on a "
-        + _render_op("tangent unless {op} clearly changes the subject. Once the task is done, confirm and stop.")
+    sess = _host.PrimusSession
+    topic = str(getattr(sess, "current_topic", "") or "")
+    if not topic:
+        topic = _detect_conversation_topic(message, history)
+        sess.current_topic = topic
+    state = SessionState(
+        topic=topic,
+        entities=tuple(getattr(sess, "recent_entities", []) or []),
+        preferences=tuple(getattr(sess, "active_preferences", []) or []),
     )
-    return "\n".join(lines)
+    recent: list[tuple[str, str]] = []
+    for h in recent_msgs[-2:]:
+        who = _OPERATOR["label"] if h.get("role") == "user" else "Primus"
+        recent.append((who, str(h.get("content") or "")))
+    return render_focus(state, message, recent)
 
 
 def build_anti_hallucination_footer(
@@ -1510,9 +1520,10 @@ def build_anti_hallucination_footer(
 #   5. Long-term memory       — memories.json + Chroma kind=ltm (perpetual, tagged)
 #   6. Knowledge base         — Chroma kind=seed|file|manual|interaction|… (docs & SME corpus)
 #
-# Before EVERY Primus/Forge response, build_recall_context() / build_memory_context()
-# injects session + summary + [MEM-N] + [CONV-N] + [KB-N] + anti-hallucination rules.
-# After each exchange, process_exchange() extracts facts, archives convos, indexes KB.
+# Before a Primus/Forge response that needs memory, build_recall_context() injects only
+# the layers that match the turn (and drops hits that don't). Older chat turns are
+# trimmed in prepare_agent_messages. process_exchange() writes long-term memory only
+# for an explicit remember / preference / decision, and a session note for a long turn.
 # consolidate() + consolidate_conversations() run periodically for durable recall.
 # ---------------------------------------------------------------------------
 
@@ -1726,6 +1737,23 @@ class MemorySystem:
             )
         return f"Stored `{entry['id']}` (importance={importance:.1f}, tags={', '.join(tags)})"
 
+    def load_turn_state(self) -> dict[str, Any]:
+        """Structured session state saved beside the session facts. Empty if none."""
+        data = self._load_session().get("state") or {}
+        return data if isinstance(data, dict) else {}
+
+    def save_turn_state(self, topic: str, entities: list[str], preferences: list[str]) -> None:
+        """Merge the small per-turn state into session_memory.json. Facts stay put."""
+        with self._lock:
+            data = self._load_session()
+            data["state"] = {
+                "topic": (topic or "")[:60],
+                "entities": [str(e)[:80] for e in entities[:8]],
+                "preferences": [str(p)[:120] for p in preferences[:6]],
+                "updated_at": _host._now_iso(),
+            }
+            self._save_session(data)
+
     def add_session_fact(self, content: str, *, tags: Optional[list[str]] = None) -> None:
         content = content.strip()
         if not content:
@@ -1842,6 +1870,16 @@ class MemorySystem:
         session = self._load_session().get("facts") or []
         summary = self._load_chat_summary().get("summary") or ""
         lines = ["## Primus memory layers", ""]
+        state = self.load_turn_state()
+        if state.get("topic") or state.get("entities") or state.get("preferences"):
+            lines.append("**Session state**")
+            if state.get("topic"):
+                lines.append(f"- Topic: {state.get('topic')}")
+            if state.get("entities"):
+                lines.append("- Entities: " + ", ".join(str(e) for e in state.get("entities")[:6]))
+            if state.get("preferences"):
+                lines.append("- Preferences: " + " | ".join(str(p) for p in state.get("preferences")[:4]))
+            lines.append("")
         lines.append(f"**Session** ({len(session)} facts this run)")
         for f in session[-5:]:
             lines.append(f"- [{', '.join(f.get('tags', []))}] {f.get('content', '')[:120]}")
@@ -1888,21 +1926,51 @@ class MemorySystem:
                 lines.append(f"- {k}: {v}")
         return "\n".join(lines)
 
-    def agent_memory_block(self) -> str:
+    def agent_memory_block(self, query: str = "") -> str:
+        """Legacy facts for the system prompt.
+
+        With no query (the /memory view) this stays the full short list. With a
+        query, only lines that share a token with the turn are included, plus the
+        few preferences active in this session.
+        """
         mem = load_memory()
         prefs = mem.get("preferences") or {}
-        lines = ["## Preferences & legacy facts"]
-        for k, v in list(prefs.items())[:12]:
-            lines.append(f"- {k}: {v}")
-        facts = mem.get("facts") or []
-        for f in facts[-8:]:
-            lines.append(f"- {f}")
-        past = _host.load_task_history()
-        if past:
-            lines.append("## Recent completed tasks")
-            for t in past[-5:]:
-                if isinstance(t, dict):
-                    lines.append(f"- [{t.get('date', '')[:10]}] {t.get('task', '')[:70]}")
+        facts = list(mem.get("facts") or [])
+        if not (query or "").strip():
+            lines = ["## Preferences & legacy facts"]
+            for k, v in list(prefs.items())[:12]:
+                lines.append(f"- {k}: {v}")
+            for f in facts[-8:]:
+                lines.append(f"- {f}")
+            past = _host.load_task_history()
+            if past:
+                lines.append("## Recent completed tasks")
+                for t in past[-5:]:
+                    if isinstance(t, dict):
+                        lines.append(f"- [{t.get('date', '')[:10]}] {t.get('task', '')[:70]}")
+            return "\n".join(lines)
+
+        from primus.core.session_state import hit_is_relevant  # noqa: PLC0415
+
+        topic = str(getattr(_host.PrimusSession, "current_topic", "") or "")
+        entities = tuple(getattr(_host.PrimusSession, "recent_entities", []) or [])
+        lines = ["## Relevant memory"]
+        for pref in list(getattr(_host.PrimusSession, "active_preferences", []) or [])[:4]:
+            lines.append(f"- {pref}")
+        for k, v in prefs.items():
+            line = f"{k}: {v}"
+            if hit_is_relevant(line, query, topic=topic, entities=entities):
+                lines.append(f"- {line}")
+            if len(lines) >= 8:
+                break
+        if len(lines) < 8:
+            for fact in reversed(facts):
+                if hit_is_relevant(str(fact), query, topic=topic, entities=entities):
+                    lines.append(f"- {fact}")
+                if len(lines) >= 8:
+                    break
+        if len(lines) == 1:
+            return ""
         return "\n".join(lines)
 
     def recall_past_conversations(self, query: str, k: Optional[int] = None) -> list[dict]:
@@ -1975,116 +2043,115 @@ class MemorySystem:
         *,
         agent_id: str = "primus",
     ) -> tuple[str, list[dict]]:
-        """Unified retrieval for Primus & Forge — mandatory before every response."""
-        k = k or int(_host.CFG.get("memory_recall_k", 5))
+        """Pull only the memory layers this turn needs, and drop hits that don't match.
+
+        Greetings and lookups return an empty block so the prompt stays on the
+        request. The compressed older-chat summary is attached by
+        ``prepare_agent_messages``, not repeated here.
+        """
+        from primus.core.session_state import hit_is_relevant, recall_layers  # noqa: PLC0415
+
+        del agent_id  # both agents share the same filtered block
+        layers = recall_layers(query)
+        if not layers:
+            return "", []
+        k = min(int(k or _host.CFG.get("memory_recall_k", 4)), 3)
         expanded = _expand_recall_query(query, history)
+        topic = str(getattr(_host.PrimusSession, "current_topic", "") or "")
+        entities = tuple(getattr(_host.PrimusSession, "recent_entities", []) or [])
+        identity_ask = bool(re.search(r"\b(who am i|my name|creator|loyalty)\b", query or "", re.I))
+
+        def _keep(content: str, tags: Optional[list] = None) -> bool:
+            if hit_is_relevant(content, query, topic=topic, entities=entities):
+                return True
+            return bool(identity_ask and self._is_identity_memory(content, tags))
+
         sections: list[str] = []
         sources: list[dict] = []
-        has_kb = has_mem = has_conv = has_summary = False
 
-        agent_note = (
-            "**Agent:** Forge — use all retrieved context; cite past technical decisions.\n\n"
-            if agent_id == "forge"
-            else "**Agent:** Primus — lead with memory/KB for business and admin context.\n\n"
-        )
-        sections.append(agent_note)
+        if "ltm" in layers or "summary" in layers:
+            kept_session: list[dict] = []
+            for fact in reversed(self._load_session().get("facts") or []):
+                content = str(fact.get("content") or "")
+                tags = fact.get("tags") or []
+                if "preferences" in tags or _keep(content, tags):
+                    kept_session.append(fact)
+                if len(kept_session) >= 4:
+                    break
+            if kept_session:
+                sess_lines = ["## This session"]
+                for fact in reversed(kept_session):
+                    sess_lines.append(f"- {str(fact.get('content') or '')[:180]}")
+                sections.append("\n".join(sess_lines))
 
-        # Close the self-reflection loop: surface recent improvement notes so Primus
-        # adapts its behaviour based on what it learned about serving the operator well.
-        improvements = self.recent_self_improvements(limit=3)
-        if improvements:
-            imp_lines = ["## Apply these (learned from self-reflection)"]
-            imp_lines += [f"- {n}" for n in improvements]
-            sections.append("\n".join(imp_lines))
+        if "ltm" in layers:
+            ltm = [
+                m for m in self.recall_ltm(expanded, k=k)
+                if _keep(str(m.get("content") or m.get("preview") or ""), m.get("tags"))
+            ]
+            if ltm:
+                mem_lines = ["## Long-term memory — cite as [MEM-N]"]
+                for i, m in enumerate(ltm, 1):
+                    tag = f"[MEM-{i}]"
+                    tags = ", ".join(m.get("tags") or [])
+                    label = _temporal_label(m.get("created_at", "")) if m.get("created_at") else ""
+                    mem_lines.append(
+                        f"{tag} id=`{m['id']}` tags={tags} ({label})\n"
+                        f"{m.get('content', m.get('preview', ''))[:400]}"
+                    )
+                    sources.append({"tag": tag, "id": m["id"], "layer": "ltm", "date_label": label})
+                sections.append("\n\n".join(mem_lines))
 
-        summary_data = self._load_chat_summary()
-        summary = (summary_data.get("summary") or "").strip()
-        if summary:
-            has_summary = True
-            sections.append(
-                "## Earlier in this chat (compressed)\n"
-                f"{summary}\n"
-                "*(Say 'Earlier in our chat…' only if this supports your answer.)*"
-            )
+        if "conv" in layers:
+            past_convos = [
+                c for c in self.recall_past_conversations(expanded, k=2)
+                if _keep(str(c.get("content") or ""))
+            ]
+            if past_convos:
+                conv_lines = ["## Previous conversations — cite as [CONV-N]"]
+                for i, c in enumerate(past_convos, 1):
+                    tag = f"[CONV-{i}]"
+                    label = c.get("date_label", "previously")
+                    topics = c.get("topics") or []
+                    top_s = f", topics: {', '.join(topics)}" if topics else ""
+                    conv_lines.append(f"{tag} ({label}{top_s})\n{c.get('content', '')[:400]}")
+                    sources.append({"tag": tag, "layer": "conversation", "date_label": label})
+                sections.append("\n\n".join(conv_lines))
 
-        session = self._load_session().get("facts") or []
-        if session:
-            sess_lines = ["## This session (key facts)"]
-            for f in session[-8:]:
-                sess_lines.append(f"- [{', '.join(f.get('tags', []))}] {f.get('content', '')}")
-            sections.append("\n".join(sess_lines))
-
-        ltm = self.recall_ltm(expanded, k=k)
-        if ltm:
-            has_mem = True
-            mem_lines = ["## Long-term memory — cite as [MEM-N]"]
-            for i, m in enumerate(ltm, 1):
-                tag = f"[MEM-{i}]"
-                tags = ", ".join(m.get("tags") or [])
-                label = _temporal_label(m.get("created_at", "")) if m.get("created_at") else ""
-                mem_lines.append(
-                    f"{tag} id=`{m['id']}` tags={tags} ({label})\n"
-                    f"{m.get('content', m.get('preview', ''))[:500]}"
+        if "kb" in layers:
+            try:
+                kb_docs = get_kb().search(
+                    expanded,
+                    k=min(int(_host.CFG.get("kb_search_k", 4)), 3),
+                    exclude_kinds={"ltm", "interaction"},
+                    prefer_collections=_prefer_collections_for(query),
                 )
-                sources.append({"tag": tag, "id": m["id"], "layer": "ltm", "date_label": label})
-            sections.append("\n\n".join(mem_lines))
+            except Exception as exc:
+                kb_docs = []
+                sections.append(f"(Knowledge base unavailable: {exc})")
+            kb_docs = [doc for doc in kb_docs if _keep(doc.page_content or "")]
+            if kb_docs:
+                kb_lines = ["## Knowledge base — cite as [KB-N]"]
+                for i, doc in enumerate(kb_docs, 1):
+                    meta = doc.metadata or {}
+                    tag = f"[KB-{i}]"
+                    kb_lines.append(
+                        f"{tag} collection=`{meta.get('collection', '?')}` source=`{meta.get('source', '?')}`\n"
+                        f"{doc.page_content.strip()[:400]}"
+                    )
+                    sources.append({"tag": tag, "source": meta.get("source"), "layer": "kb"})
+                sections.append("\n\n".join(kb_lines))
 
-        past_convos = self.recall_past_conversations(expanded)
-        if past_convos:
-            has_conv = True
-            conv_lines = ["## Previous conversations — cite as [CONV-N]"]
-            for i, c in enumerate(past_convos, 1):
-                tag = f"[CONV-{i}]"
-                label = c.get("date_label", "previously")
-                topics = c.get("topics") or []
-                top_s = f", topics: {', '.join(topics)}" if topics else ""
-                conv_lines.append(
-                    f"{tag} ({label}{top_s})\n{c.get('content', '')[:500]}"
+        if not sections:
+            if "kb" in layers or "ltm" in layers:
+                return (
+                    "No matching notes in memory or the knowledge base for this request. "
+                    "Say so if a personal or project fact is missing.",
+                    [],
                 )
-                sources.append({"tag": tag, "layer": "conversation", "date_label": label})
-            sections.append("\n\n".join(conv_lines))
-
-        try:
-            kb_docs = get_kb().search(
-                expanded,
-                k=int(_host.CFG.get("kb_search_k", 4)),
-                exclude_kinds={"ltm", "interaction"},
-                prefer_collections=_prefer_collections_for(query),
-            )
-        except Exception as exc:
-            kb_docs = []
-            sections.append(f"(Knowledge base unavailable: {exc})")
-
-        if kb_docs:
-            has_kb = True
-            kb_lines = ["## Knowledge base — cite as [KB-N]"]
-            for i, doc in enumerate(kb_docs, 1):
-                meta = doc.metadata or {}
-                tag = f"[KB-{i}]"
-                kb_lines.append(
-                    f"{tag} collection=`{meta.get('collection', '?')}` source=`{meta.get('source', '?')}`\n"
-                    f"{doc.page_content.strip()[:500]}"
-                )
-                sources.append({"tag": tag, "source": meta.get("source"), "layer": "kb"})
-            sections.append("\n\n".join(kb_lines))
-
-        recall_instruction = _render_op(
-            "## Recall instruction\n"
-            "Connect {op_pos} businesses, projects, and preferences to [KB-N], [MEM-N], [CONV-N]. "
-            "Reference past work naturally when supported (e.g. 'As we discussed last week about {op_project_example2}…'). "
-            "If retrieval lacks facts, say so — never invent."
-        )
-        sections.insert(1, recall_instruction)
-
-        sections.append(
-            build_anti_hallucination_footer(
-                has_kb=has_kb,
-                has_mem=has_mem,
-                has_conv=has_conv,
-                has_summary=has_summary or bool(session),
-            )
-        )
-
+            return "", []
+        if sources:
+            sections.append("Cite [KB-N], [MEM-N], or [CONV-N] only for an excerpt you actually use.")
         return "\n\n".join(sections), sources
 
     def _heuristic_extract(self, user_msg: str, assistant_msg: str) -> list[dict]:
@@ -2169,47 +2236,77 @@ class MemorySystem:
             _host.log.debug("LLM memory extract skipped: %s", exc)
             return []
 
+    def _maybe_summarize_chat(self) -> None:
+        """Compress older turns in the background once the transcript outgrows the window."""
+        hist = _host.load_chat_history()
+        plain = [h for h in hist if isinstance(h, dict) and not h.get("metadata")]
+        threshold = int(_host.CFG.get("chat_summarize_threshold", 24))
+        if len(plain) >= threshold:
+            threading.Thread(
+                target=self.summarize_chat_history,
+                args=(hist,),
+                daemon=True,
+                name="primus-chat-summary",
+            ).start()
+
     def process_exchange(self, user_msg: str, assistant_msg: str) -> None:
-        if len(user_msg.strip()) < 12:
+        from primus.core.session_state import persistence_for  # noqa: PLC0415
+
+        kind = persistence_for(user_msg)
+        if kind == "skip":
+            # Lookups and small talk still count toward trimming a long transcript.
+            if len((user_msg or "").strip()) >= 12:
+                self._maybe_summarize_chat()
             return
         # Identity lock: canonicalize the creator's name on the way into every memory path.
         user_msg = self._normalize_name(user_msg)
         assistant_msg = self._normalize_name(assistant_msg)
-        self.add_session_fact(f"Q: {user_msg[:200]} → A: {assistant_msg[:200]}", tags=["session"])
-
-        candidates = self._heuristic_extract(user_msg, assistant_msg)
         max_imp = 0.55
-        if len(user_msg) > 80 and not candidates:
-            candidates = self._llm_extract(user_msg, assistant_msg)
+        topics = detect_memory_tags(user_msg)
 
-        for item in candidates:
-            imp = float(item.get("importance", 0.6))
-            max_imp = max(max_imp, imp)
-            if imp >= 0.5:
+        if kind == "session":
+            # One note for this run. Not long-term memory and not the knowledge base.
+            self.add_session_fact(user_msg.strip()[:240], tags=["session"])
+        else:
+            candidates = self._heuristic_extract(user_msg, assistant_msg)
+            if len(user_msg) > 80 and not candidates:
+                candidates = self._llm_extract(user_msg, assistant_msg)
+            for item in candidates:
+                imp = float(item.get("importance", 0.6))
+                max_imp = max(max_imp, imp)
+                if imp >= 0.5:
+                    self.add_memory(
+                        item["content"],
+                        tags=item.get("tags"),
+                        importance=imp,
+                        source="extracted",
+                    )
+            if not candidates:
                 self.add_memory(
-                    item["content"],
-                    tags=item.get("tags"),
-                    importance=imp,
+                    user_msg.strip()[:500],
+                    tags=topics,
+                    importance=0.7,
                     source="extracted",
                 )
-
-        topics = detect_memory_tags(user_msg)
-        if len(user_msg) > 50 or max_imp >= 0.65:
-            self.archive_exchange(user_msg, assistant_msg, importance=max_imp, topics=topics)
-
-        summary = f"{_OPERATOR['label']} ({_temporal_label(_host._now_iso())}): {user_msg.strip()[:350]}\nPrimus: {assistant_msg.strip()[:450]}"
-        stamp = datetime.now().strftime("%Y-%m-%d")
-        try:
-            get_kb().learn_text(
-                summary,
-                source=f"interaction:{stamp}:{uuid.uuid4().hex[:8]}",
-                kind="interaction",
-                collection="learned",
-                importance=max(0.55, max_imp),
-                tags=topics,
+                max_imp = max(max_imp, 0.7)
+            if len(user_msg) > 40:
+                self.archive_exchange(user_msg, assistant_msg, importance=max_imp, topics=topics)
+            summary = (
+                f"{_OPERATOR['label']} ({_temporal_label(_host._now_iso())}): "
+                f"{user_msg.strip()[:350]}\nPrimus: {assistant_msg.strip()[:450]}"
             )
-        except Exception:
-            pass
+            stamp = datetime.now().strftime("%Y-%m-%d")
+            try:
+                get_kb().learn_text(
+                    summary,
+                    source=f"interaction:{stamp}:{uuid.uuid4().hex[:8]}",
+                    kind="interaction",
+                    collection="learned",
+                    importance=max(0.55, max_imp),
+                    tags=topics,
+                )
+            except Exception:
+                pass
 
         items = _load_interactions()
         items.append(
@@ -2222,27 +2319,16 @@ class MemorySystem:
             }
         )
         _save_interactions(items)
+        self._maybe_summarize_chat()
 
-        hist = _host.load_chat_history()
-        plain = [h for h in hist if isinstance(h, dict) and not h.get("metadata")]
-        threshold = int(_host.CFG.get("chat_summarize_threshold", 24))
-        if len(plain) >= threshold:
-            threading.Thread(
-                target=self.summarize_chat_history,
-                args=(hist,),
-                daemon=True,
-                name="primus-chat-summary",
-            ).start()
-        if max_imp >= 0.7 or len(user_msg) > 120:
+        if kind == "durable" and (max_imp >= 0.7 or len(user_msg) > 120):
             threading.Thread(
                 target=self.consolidate_conversations,
                 daemon=True,
                 name="primus-conv-consolidate",
             ).start()
 
-        # --- Continuous learning: every N turns, distil a structured learning digest ---
-        # (key facts, preferences, working style, wins/failures, new topics) in the
-        # background so it never slows the reply. See learning_digest() for details.
+        # Digest and reflection stay on substantive turns, in the background, local model only.
         every = max(2, int(_host.CFG.get("learning_digest_turns", 6)))
         turns = self._bump_turn()
         if turns % every == 0:
@@ -2251,8 +2337,6 @@ class MemorySystem:
                 daemon=True,
                 name="primus-learning-digest",
             ).start()
-
-        # --- Self-reflection loop: lightweight, background, only on substantive turns ---
         if _host.CFG.get("self_reflection", True) and len(assistant_msg.strip()) >= 60:
             threading.Thread(
                 target=self.reflect_on_exchange,
@@ -2550,15 +2634,6 @@ class MemorySystem:
                 }
             )
             _host.log.info("Chat summary updated (%s chars)", len(new_summary))
-            try:
-                self.add_memory(
-                    f"Conversation summary ({_host._now_iso()[:10]}): {new_summary[:800]}",
-                    tags=["session", "business"],
-                    importance=0.75,
-                    source="chat_summary",
-                )
-            except Exception:
-                pass
         except Exception as exc:
             _host.log.debug("Chat summarization skipped: %s", exc)
 
@@ -2668,8 +2743,19 @@ class MemorySystem:
 
     def clear_session(self) -> None:
         self._save_session(
-            {"session_id": uuid.uuid4().hex[:12], "started_at": _host._now_iso(), "facts": []}
+            {
+                "session_id": uuid.uuid4().hex[:12],
+                "started_at": _host._now_iso(),
+                "facts": [],
+                "state": {"topic": "", "entities": [], "preferences": []},
+            }
         )
+        try:
+            _host.PrimusSession.current_topic = ""
+            _host.PrimusSession.recent_entities = []
+            _host.PrimusSession.active_preferences = []
+        except Exception:  # noqa: BLE001
+            pass
 
     def stats(self) -> dict[str, Any]:
         store = self._load_store()
@@ -2914,19 +3000,36 @@ def schedule_memory_consolidation() -> None:
     _consolidation_timer.start()
 
 
-def prepare_agent_messages(history: list) -> list[BaseMessage]:
-    """Short-term memory: recent turns + optional compressed summary prefix."""
+def prepare_agent_messages(history: list, *, limit: Optional[int] = None) -> list[BaseMessage]:
+    """Recent turns for the model, with older ones shortened and a short prefix.
+
+    The newest four messages stay whole. Anything older inside the window is
+    clipped. Turns that fall off the window become one local summary line, or
+    the stored chat summary when that background pass has already run.
+    ``limit`` keeps a leading summary when a caller only wants the last few turns.
+    """
+    from primus.core.session_state import (  # noqa: PLC0415
+        _SUMMARY_MARK,
+        clip_history,
+        extractive_summary,
+        keep_summary_prefix,
+    )
+
     plain = [h for h in (history or []) if isinstance(h, dict) and not h.get("metadata")]
     keep = int(_host.CFG.get("chat_recent_keep", 12))
+    older = plain[:-keep] if len(plain) > keep else []
     recent = plain[-keep:] if len(plain) > keep else plain
+    recent = clip_history(recent, full=4, clip=240)
     msgs = _host.gradio_history_to_messages(recent)
-    summary = get_memory_system()._load_chat_summary().get("summary") or ""
-    if summary and len(plain) > keep:
-        prefix = (
-            "[Earlier in this chat (summary for continuity): "
-            f"{summary[:1200]}]"
-        )
+    summary = ""
+    if older:
+        stored = (get_memory_system()._load_chat_summary().get("summary") or "").strip()
+        summary = (stored[:700] if stored else extractive_summary(older, limit=500)).strip()
+    if summary:
+        prefix = f"{_SUMMARY_MARK} {summary}]"
         msgs = [HumanMessage(content=prefix)] + msgs
+    if limit:
+        msgs = keep_summary_prefix(msgs, int(limit))
     return msgs
 
 

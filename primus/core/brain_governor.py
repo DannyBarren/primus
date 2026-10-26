@@ -30,6 +30,15 @@ GROK_CHAT_URL = "https://api.x.ai/v1/chat/completions"
 GROK_MODEL = "grok-4"
 HTTP_TIMEOUT_SEC = 45
 NOT_CONFIGURED = "Brain is not configured (missing XAI_API_KEY / vault:grok)."
+LOCAL_ONLY_MSG = "Local-only mode is on — Ollama only (7B and 32B). External brain stays off."
+
+
+def local_only_enabled() -> bool:
+    """True when the UI/config toggle keeps Primus on local Ollama models."""
+    try:
+        return bool(_host.CFG.get("local_only", True))
+    except Exception:  # noqa: BLE001
+        return True
 LOOP_STUCK = "I kept circling on this — here's where I got stuck."
 REFUSE_PRIMUS_PATCH = "ask_grok will not patch primus/ source."
 
@@ -277,6 +286,8 @@ def cap_block_reason(budget: Optional[dict[str, Any]] = None) -> Optional[str]:
 
 def allow_http(action: str = "") -> tuple[bool, str]:
     """Both caps and the loop detector must pass. Either trip → no HTTP."""
+    if local_only_enabled():
+        return False, LOCAL_ONLY_MSG
     cap = cap_block_reason()
     if cap:
         try:
@@ -340,6 +351,8 @@ def _redact_payload(question: str, briefing: str, key: str = "") -> tuple[str, s
 
 
 def _post_chat(question: str, briefing: str, key: str, *, timeout: float = HTTP_TIMEOUT_SEC) -> str:
+    if local_only_enabled():
+        return LOCAL_ONLY_MSG
     messages: list[dict[str, str]] = []
     if briefing:
         messages.append({"role": "system", "content": briefing})
@@ -406,6 +419,8 @@ def leftover_may_ask_grok(question: str, briefing: str = "") -> Optional[str]:
 
 def ask_frontier(question: str, briefing: str = "") -> str:
     """Governor + redact + HTTP. Used by ``ask_grok`` and leftover/need_brain/heavy."""
+    if local_only_enabled():
+        return LOCAL_ONLY_MSG
     q = question or ""
     brief = briefing or ""
     if refuses_primus_patch(q, brief):

@@ -1,7 +1,8 @@
 """Leftover-utterance receptionist — fast-model JSON slots, never shown in chat.
 
 Runs only after the green gates miss and ``route_prompt`` falls through to
-``path=primus`` / the plan→execute graph. One bounded ``primus_fast_model`` call.
+``path=primus`` / the plan→execute graph. One bounded call on the daily model
+(the fast model only when it is a distinct non-3b tag).
 Missing model / timeout / bad JSON → ``None`` (caller keeps the current graph).
 ``need_brain`` may call ``ask_grok`` (governor + redact). Fast winners never do.
 
@@ -196,8 +197,9 @@ def parse_slots(raw: Any, allowed: Optional[set[str]] = None) -> Optional[Recept
 
 
 def _timeout_sec() -> int:
+    """JSON slot call. Stays short even when the chat-reply budget is higher."""
     try:
-        bound = int(_host.CFG.get("fast_chat_invoke_timeout_sec", 15))
+        bound = int(_host.CFG.get("fast_chat_invoke_timeout_sec", 120))
     except Exception:  # noqa: BLE001
         bound = 15
     if bound <= 0:
@@ -206,7 +208,7 @@ def _timeout_sec() -> int:
 
 
 def _classify(message: str) -> Optional[ReceptionistSlots]:
-    """One bounded fast-model call. Redacts model-bound input. Never returns chat text."""
+    """One bounded JSON call on the daily model. Redacts model-bound input. Never returns chat text."""
     from primus.agents.system import (  # noqa: PLC0415 — lazy; host already loaded
         _fast_model_available,
         coerce_message_text,
@@ -214,9 +216,11 @@ def _classify(message: str) -> Optional[ReceptionistSlots]:
     )
     from primus.core.redact import redact_model_input  # noqa: PLC0415
 
-    if not _fast_model_available():
-        return None
-    model = _host.CFG.get("primus_fast_model") or ""
+    if _fast_model_available():
+        model = _host.CFG.get("primus_fast_model") or ""
+    else:
+        # No separate fast model (the 3b tier is gone). Slot on the daily 7b.
+        model = _host.CFG.get("model") or getattr(_host, "DEFAULT_MODEL", "") or ""
     if not model:
         return None
     allow = known_tool_names()

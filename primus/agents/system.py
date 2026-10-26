@@ -17,6 +17,7 @@ Nothing here is locked — edit routing, prompts wiring, fast paths, and agents 
 """
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import re
@@ -358,13 +359,6 @@ def _ft_tool_text(fn: Any, **kwargs: Any) -> str:
             pass
 
 
-_FT_LOC_STOPWORDS = {
-    "the", "a", "an", "my", "me", "current", "today", "tell", "give", "show",
-    "get", "please", "now", "is", "it", "like", "whats", "what", "hows", "how",
-    "local", "outside", "here", "right", "currently",
-}
-
-
 def _ft_weather_location(low: str) -> str:
     m = _FT_WEATHER_LOC_IN_RE.search(low)
     loc = m.group(1) if m else ""
@@ -372,10 +366,10 @@ def _ft_weather_location(low: str) -> str:
         m2 = _FT_WEATHER_LOC_PRE_RE.search(low)
         loc = m2.group(1) if m2 else ""
     loc = _FT_FILLER_RE.sub("", loc)
-    loc = re.sub(r"[?!.,']+", " ", loc)
-    # Drop leading/trailing filler words ("tell me the …", "… please") so only a real place remains.
-    tokens = [t for t in loc.split() if t.lower() not in _FT_LOC_STOPWORDS]
-    return " ".join(tokens).strip()
+    # "what will the weather" must not become the place "will".
+    from primus.core.present import clean_place  # noqa: PLC0415
+
+    return clean_place(loc)
 
 
 def _clean_mail_lines(text: str, max_lines: int = 8) -> list[str]:
@@ -505,6 +499,129 @@ def _ft_count_target(low: str) -> str:
     return "~"
 
 
+# Natural "show me my downloads" / "what's in my home folder" — not the `list|ls` prefix.
+_FT_SHOW_DIR_PLACES = frozenset({
+    "downloads", "desktop", "documents", "docs", "pictures", "home",
+})
+_FT_SHOW_DIR_VETO_RE = re.compile(
+    r"\b(?:news|weather|forecast|e-?mail|gmail|inbox|calendar|git|todo|notes?|"
+    r"delete|remove|move|write|create|send|draft|code|script|python)\b",
+    re.I,
+)
+_FT_GIT_SAFE = {
+    "status": "status -sb",
+    "log": "log -8 --oneline",
+    "diff": "diff --stat",
+    "branch": "branch -vv",
+    "remote": "remote -v",
+}
+_FT_CAL_RE = re.compile(
+    r"\b(?:check|show|see)\s+(?:me\s+)?(?:my\s+)?calendar\b"
+    r"|\bwhat(?:'s| is|s)\s+on\s+(?:my\s+)?(?:calendar|schedule)\b"
+    r"|\b(?:any|my)\s+(?:meetings|events)\s+(?:today|tomorrow)\b"
+    r"|\b(?:meetings|events)\s+today\b"
+    r"|\bupcoming\s+(?:events|meetings)\b"
+    r"|\bmy\s+calendar\s+today\b"
+    r"|\bdo i have (?:any )?(?:meetings|events)\b",
+    re.I,
+)
+
+
+def _ft_show_dir_target(msg: str) -> Optional[str]:
+    """Known folder for a 'show me / what's in' ask, else None.
+
+    Only a named place (downloads, desktop, home, …) or a real path. Anything
+    else stays on the agent so "show me how this works" is not a directory list.
+    """
+    raw_msg = (msg or "").strip()
+    if not raw_msg or _FT_SHOW_DIR_VETO_RE.search(raw_msg):
+        return None
+    m = re.match(
+        r"^(?:please\s+|can you\s+|could you\s+)?"
+        r"(?:show|display)\s+(?:me\s+)?(?:the\s+)?"
+        r"(?:contents\s+of\s+|files\s+(?:in|on|inside)\s+)?"
+        r"(?:my\s+)?(.+?)\s*[.?!]?\s*$",
+        raw_msg,
+        re.I,
+    )
+    if not m:
+        m = re.match(
+            r"^(?:please\s+)?what(?:'s| is|s)\s+in\s+(?:my\s+|the\s+)?(.+?)\s*[.?!]?\s*$",
+            raw_msg,
+            re.I,
+        )
+    if not m:
+        return None
+    raw = m.group(1).strip().strip("?.!")
+    raw = re.sub(r"^(?:the|my)\s+", "", raw, flags=re.I)
+    raw = re.sub(r"\s+(?:folder|directory|dir)$", "", raw, flags=re.I).strip()
+    if not raw:
+        return None
+    if raw.startswith("~") or raw.startswith("/"):
+        return raw.split()[0]
+    if raw.lower() not in _FT_SHOW_DIR_PLACES:
+        return None
+    return _ft_count_target(raw.lower())
+
+
+def _ft_git_call(msg: str) -> Optional[tuple[str, str]]:
+    """Read-only ``(git_args, repo)`` for a status/log/diff/branch/remote ask, else None.
+
+    User-supplied git arguments are dropped. Push, commit, and other writes stay
+    on the agent.
+    """
+    text = (msg or "").strip()
+    if not text or re.search(r"[;&|`$<>]", text):
+        return None
+    if re.search(r"\b(?:explain|what does|how does|why does|meaning of)\b", text, re.I):
+        return None
+    if re.search(
+        r"\bgit\s+(?:push|commit|add|reset|clean|rebase|checkout|merge|stash|tag|pull|clone)\b",
+        text,
+        re.I,
+    ):
+        return None
+    m = re.search(r"\bgit\s+(status|log|diff|branch|remote)\b", text, re.I)
+    if not m:
+        return None
+    repo_m = re.search(r"(~[\w./-]*|/[\w./-]+)", text)
+    repo = repo_m.group(1) if repo_m else "."
+    return _FT_GIT_SAFE[m.group(1).lower()], repo
+
+
+def _ft_calendar_query(msg: str) -> Optional[str]:
+    """``time_min`` for an upcoming-calendar ask. ``''`` means from now. None if not this ask.
+
+    Creating, moving, or mailing about an event stays on the agent.
+    """
+    low = (msg or "").lower()
+    if not _FT_CAL_RE.search(low):
+        return None
+    if re.search(
+        r"\b(?:create|add|book|cancel|delete|invite|e-?mail|gmail|inbox|slack)\b"
+        r"|\bschedule\s+(?:a|an|the)\b",
+        low,
+    ):
+        return None
+    if re.search(r"\btoday\b", low):
+        return datetime.now().strftime("%Y-%m-%d")
+    return ""
+
+
+def _ft_emit_listing(target: str) -> Optional[str]:
+    """In-process ``list_directory``. None when the registry is not loaded."""
+    reg = _registry_mod()
+    if reg is None:
+        return None
+    _host.PrimusSession.emit_think("Fast tool", f"list_directory({target}) — direct", "running")
+    listing = _ft_tool_text(reg.list_directory, path=target)
+    if listing.startswith(("✗", "Refusing", "Not found")):
+        return listing
+    from primus.core.present import present_listing  # noqa: PLC0415
+
+    return present_listing(listing, target)
+
+
 def fast_tool_answer(message: str) -> Optional[str]:
     """Run the single obvious tool for a clear request, returning clean text — else None.
 
@@ -595,12 +712,9 @@ def fast_tool_answer(message: str) -> Optional[str]:
             if ln.startswith(mark)
         ]
         noun = "folders" if want_dir else "files"
-        if not names:
-            return f"There are no {noun} in `{target}`."
-        if len(names) == 1:
-            noun = noun[:-1]  # "1 folder", not "1 folders"
-        shown = ", ".join(names[:8]) + (f", … and {len(names) - 8} more" if len(names) > 8 else "")
-        return f"There are **{len(names)} {noun}** in `{target}`: {shown}"
+        from primus.core.present import count_sentence  # noqa: PLC0415
+
+        return count_sentence(names, noun, target)
 
     # Multi-step still leaves the fast path (compound/mail/count already ran above).
     if _MULTI_STEP_RE.search(msg):
@@ -609,24 +723,21 @@ def fast_tool_answer(message: str) -> Optional[str]:
     # --- List a directory → list_directory (empty is 0 files, 0 folders — not "No matches") ---
     list_m = re.match(r"^\s*(?:list|ls)\s+(.+?)\s*$", msg, re.I)
     if list_m:
-        reg = _registry_mod()
-        if reg is not None:
-            raw = list_m.group(1).strip()
-            raw = re.sub(r"^(?:the\s+)?(?:folder|directory|dir)\s+", "", raw, flags=re.I)
-            target = _ft_count_target(raw.lower()) if raw else "~"
-            if raw.startswith("~") or raw.startswith("/"):
-                target = raw.split()[0]
-            _host.PrimusSession.emit_think("Fast tool", f"list_directory({target}) — direct", "running")
-            listing = _ft_tool_text(reg.list_directory, path=target)
-            if listing.startswith(("✗", "Refusing", "Not found")):
-                return listing
-            if (
-                (not listing.strip())
-                or listing.startswith("No matches")
-                or listing.startswith("0 files, 0 folders")
-            ):
-                return f"0 files, 0 folders in `{target}`."
-            return listing
+        raw = list_m.group(1).strip()
+        raw = re.sub(r"^(?:the\s+)?(?:folder|directory|dir)\s+", "", raw, flags=re.I)
+        target = _ft_count_target(raw.lower()) if raw else "~"
+        if raw.startswith("~") or raw.startswith("/"):
+            target = raw.split()[0]
+        listed = _ft_emit_listing(target)
+        if listed is not None:
+            return listed
+
+    # --- "show me my downloads" / "what's in my home folder" → same listing, no agent ---
+    show_target = _ft_show_dir_target(msg)
+    if show_target:
+        listed = _ft_emit_listing(show_target)
+        if listed is not None:
+            return listed
 
     # --- Weather → get_weather (network-bound, ~1s) ---
     # Only treat as a *current weather* request: skip when it's really an action
@@ -683,8 +794,32 @@ def fast_tool_answer(message: str) -> Optional[str]:
             )
             if tm:
                 topic = (tm.group(1) or tm.group(2) or "").strip()
+        from primus.core.present import clean_topic  # noqa: PLC0415
+
+        topic = clean_topic(topic)
         _host.PrimusSession.emit_think("Fast tool", f"get_news({topic or 'top'}) — direct", "running")
         return _ft_tool_text(_host.get_news, topic=topic)
+
+    # --- Read-only git (status/log/diff/branch/remote) → GitTool, no planner ---
+    # Above the 90-char cap: "can you show me the git status of this repo" is still git.
+    git_call = _ft_git_call(msg)
+    if git_call:
+        reg = _registry_mod()
+        if reg is not None:
+            git_args, repo = git_call
+            _host.PrimusSession.emit_think("Fast tool", f"git({git_args}) — direct", "running")
+            return _ft_tool_text(reg.GitTool(), git_args=git_args, repo_path=repo)
+
+    # --- Upcoming calendar → calendar_list_events. Creates and mail stay on the agent. ---
+    cal_min = _ft_calendar_query(msg)
+    if cal_min is not None:
+        reg = _registry_mod()
+        if reg is not None:
+            _host.PrimusSession.emit_think("Fast tool", "calendar — direct", "running")
+            kwargs: dict[str, Any] = {"max_results": 8}
+            if cal_min:
+                kwargs["time_min"] = cal_min
+            return _ft_tool_text(reg.calendar_list_events, **kwargs)
 
     # Length cap keeps the remaining fast path for short commands — but allow long messages
     # that carry a URL (so "read this article https://very/long/url" still routes to read_article).
@@ -973,14 +1108,240 @@ class ResponseCache:
 _response_cache = ResponseCache()
 
 
+_HEAVY_CHAIN_VERB_RE = re.compile(
+    r"\b(read|write|list|search|email|draft|fix|refactor|implement|run)\b",
+    re.I,
+)
+_HEAVY_DEBUG_RE = re.compile(
+    r"\b(traceback|stack trace|refactor|debug|not working|doesn'?t work)\b",
+    re.I,
+)
+_HEAVY_CONTEXT_RE = re.compile(
+    r"\b(file|module|function|class|repo|primus|admin_assistant)\b",
+    re.I,
+)
+# Source paths. Two or more distinct files is a multi-file coding task.
+_CODE_PATH_RE = re.compile(
+    r"\b[\w./~-]+\.(?:py|sh|ts|js|jsx|tsx|go|rs|java|c|cpp|h|rb|php|sql)\b",
+    re.I,
+)
+# Short examples, one function, or a plain explanation. These stay on the 7b.
+_SIMPLE_CODE_RE = re.compile(
+    r"\b(?:write|create|make|give me|show me|need)\b.{0,48}"
+    r"\b(?:a |an )?(?:short |simple |small |basic )?(?:function|method|snippet|example|one-?liner)\b"
+    r"|\b(?:short |simple |small |basic |code |python )example\b"
+    r"|\bexample (?:of |for )?(?:a |an )?(?:function|class|decorator|comprehension|regex|snippet|script)\b"
+    r"|\b(?:explain|what does|how does|walk me through)\b.{0,48}"
+    r"\b(?:function|method|snippet|code|line|loop|class|decorator|comprehension)\b"
+    r"|\b(?:what is|what's|how do i write)\b.{0,40}"
+    r"\b(?:a |an )?(?:function|decorator|list comprehension|generator|class|regex)\b",
+    re.I | re.S,
+)
+# Explicitly large coding work, beyond a single function.
+_COMPLEX_CODE_RE = re.compile(
+    r"\b(?:multi-?file|multiple files|several files|"
+    r"across (?:these |the )?(?:files|modules)|"
+    r"whole (?:repo|codebase|project)|entire (?:repo|codebase)|codebase|architecture)\b"
+    r"|\brefactor\b.{0,48}\b(?:files|modules|codebase|repo|project)\b",
+    re.I,
+)
+# 32b graph cap. A configured 0 used to mean "no timeout".
+_FORGE_TIMEOUT_DEFAULT = 240
+_FORGE_TIMEOUT_CAP = 300
+# One chat call (follow-ups and straightforward replies). 0 used to skip the cap.
+# Greetings stay on the shorter pulse budget. An inlined file uses a higher floor
+# and its own cap so a PDF read is not cut off with the chat cap.
+_CHAT_TIMEOUT_DEFAULT = 120
+_CHAT_TIMEOUT_CAP = 180
+_CHAT_TIMEOUT_PULSE = 20
+_CHAT_TIMEOUT_ATTACH_FLOOR = 180
+_CHAT_TIMEOUT_ATTACH_CAP = 240
+_ATTACH_MARK = "[Attached document:"
+_FOLLOWUP_MAX_CHARS = 280
+# Continuations the session-state prefix list does not already catch.
+_FOLLOWUP_CONTINUE_RE = re.compile(
+    r"^(?:tell me more|what about|how about|expand(?: on(?: that)?)?|elaborate|"
+    r"more detail|the other one|do the same|and the|and that|and also|"
+    r"same for|same with|go on)\b"
+    r"|^(?:please\s+|can you\s+|could you\s+)(?:also|and)\b"
+    r"|\b(?:tell me more|more detail|what about|how about)\b",
+    re.I,
+)
+# Status stays on the 7B. A bare "status" is too wide (it matches a refactor).
+_STATUS_STAY_RE = re.compile(
+    r"\b(?:battery|disk space|free space|system (?:status|load|resources)|"
+    r"weather|forecast|wi-?fi|bluetooth|"
+    r"what(?:'?s| is) the (?:time|date)|"
+    r"(?:git|system|disk|network) status)\b",
+    re.I,
+)
+
+
+def _coding_needs_heavy_model(message: str) -> Optional[bool]:
+    """True for complex, multi-step, or multi-file code. False for a short simple ask.
+
+    None leaves the existing score and intent rules alone.
+    """
+    msg = (message or "").strip()
+    if not msg:
+        return None
+    files = {hit.group(0).lower() for hit in _CODE_PATH_RE.finditer(msg)}
+    multi = bool(_MULTI_STEP_RE.search(msg))
+    looks_like_code = bool(
+        files
+        or _SIMPLE_CODE_RE.search(msg)
+        or _COMPLEX_CODE_RE.search(msg)
+        or re.search(
+            r"\b(function|class|method|snippet|traceback|refactor|debug|implement)\b",
+            msg,
+            re.I,
+        )
+    )
+    if len(files) >= 2 or _COMPLEX_CODE_RE.search(msg):
+        return True
+    if multi and looks_like_code:
+        return True
+    if re.search(r"\b(traceback|stack trace)\b", msg, re.I) or (
+        msg.count("```") >= 2 and len(msg) > 500
+    ):
+        return True
+    if (
+        looks_like_code
+        and len(msg) <= 420
+        and len(files) <= 1
+        and not multi
+        and _SIMPLE_CODE_RE.search(msg)
+    ):
+        return False
+    return None
+
+
+def _bounded_forge_timeout() -> int:
+    """Forge / 32b invoke budget. Always positive and never above the hard cap."""
+    try:
+        raw = int(_host.CFG.get("forge_invoke_timeout_sec", _FORGE_TIMEOUT_DEFAULT))
+    except (TypeError, ValueError):
+        raw = _FORGE_TIMEOUT_DEFAULT
+    if raw <= 0:
+        raw = _FORGE_TIMEOUT_DEFAULT
+    return min(raw, _FORGE_TIMEOUT_CAP)
+
+
+def _message_has_attachment(message: str) -> bool:
+    """True when the UI folded a file (PDF or otherwise) into this turn."""
+    return _ATTACH_MARK in (message or "")
+
+
+def _operator_ask(message: str) -> str:
+    """User words only. Inlined file text must not steer routing or the 32B."""
+    msg = message or ""
+    idx = msg.find(_ATTACH_MARK)
+    if idx < 0:
+        return msg.strip()
+    head = msg[:idx].rstrip()
+    pre = head.rfind("\n\n")
+    if pre >= 0 and "attached document" in head[pre:].lower():
+        head = head[:pre]
+    return head.strip()
+
+
+def _bounded_chat_timeout(*, pulse: bool = False, attachment: bool = False) -> int:
+    """One chat-call budget. Always positive, and never above the hard cap.
+
+    A greeting uses the short pulse budget so "hi" does not wait out a follow-up.
+    An attached file uses a higher floor and its own cap: prompt eval of a PDF is
+    much slower than a follow-up, and it must not inherit an aggressive chat cap.
+    """
+    try:
+        raw = int(_host.CFG.get("fast_chat_invoke_timeout_sec", _CHAT_TIMEOUT_DEFAULT))
+    except (TypeError, ValueError):
+        raw = _CHAT_TIMEOUT_DEFAULT
+    if raw <= 0:
+        raw = _CHAT_TIMEOUT_DEFAULT
+    if attachment:
+        return min(max(raw, _CHAT_TIMEOUT_ATTACH_FLOOR), _CHAT_TIMEOUT_ATTACH_CAP)
+    if pulse:
+        return min(raw, _CHAT_TIMEOUT_PULSE)
+    return min(raw, _CHAT_TIMEOUT_CAP)
+
+
+def _straightforward_followup(message: str) -> bool:
+    """A short continuation. Multi-step work and clearly complex code are not follow-ups."""
+    msg = _operator_ask(message)
+    if not msg or msg.startswith("/") or len(msg) > _FOLLOWUP_MAX_CHARS:
+        return False
+    if _MULTI_STEP_RE.search(msg) or _COMPLEX_CODE_RE.search(msg):
+        return False
+    files = {hit.group(0).lower() for hit in _CODE_PATH_RE.finditer(msg)}
+    if len(files) >= 2:
+        return False
+    try:
+        from primus.core.session_state import _is_followup  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        continued = False
+    else:
+        continued = _is_followup(msg)
+    if continued:
+        return True
+    return bool(_FOLLOWUP_CONTINUE_RE.search(msg))
+
+
+def _turn_needs_heavy(message: str, forge_score: float = 0.0) -> bool:
+    """True only when the 32b should run. Straightforward work stays on the 7b.
+
+    A follow-up, a status check, and a short example stay on the 7b. A basic
+    explanation stays on the 7b even when the intent label says the code is not
+    simple. Inlined file text is ignored, so a PDF cannot look like a long coding
+    task. Multi-file, multi-step, and other clearly complex coding still takes the 32b.
+    """
+    msg = _operator_ask(message)
+    if _message_has_attachment(message) and not msg:
+        return False
+    code_heavy = _coding_needs_heavy_model(msg)
+    if code_heavy is True:
+        return True
+    if _straightforward_followup(msg):
+        return False
+    if code_heavy is False:
+        return False
+    if msg and _STATUS_STAY_RE.search(msg) and not _MULTI_STEP_RE.search(msg):
+        return False
+    try:
+        from primus.core.intent import heavy_from_intent  # noqa: PLC0415
+
+        hinted = heavy_from_intent()
+    except Exception:  # noqa: BLE001
+        hinted = None
+    if hinted is not None:
+        return hinted
+    if not msg:
+        return False
+    if _MULTI_STEP_RE.search(msg):
+        return True
+    if len(msg) > 80 and len(re.findall(r"\band\b", msg, re.I)) >= 2 and _HEAVY_CHAIN_VERB_RE.search(msg):
+        return True
+    try:
+        floor = float(_host.CFG.get("router_heavy_min_score", 4.5))
+    except (TypeError, ValueError):
+        floor = 4.5
+    if forge_score < floor:
+        return False
+    # Length alone is not a 32B signal. A long follow-up or an inlined file stays
+    # on the 7B. Clearly complex debugging of existing code still escalates.
+    return bool(_HEAVY_DEBUG_RE.search(msg) and _HEAVY_CONTEXT_RE.search(msg))
+
+
 class ModelRouter:
-    """Weighted intent router — deterministic, explainable, Forge-conservative.
+    """Weighted intent router — deterministic, explainable, 32b-conservative.
 
     Scoring model:
       - Each pattern match adds weighted points to forge_score or primus_score
       - Intent phrases (build a script, automate, debug) add bonus forge weight
       - Primus fast-path patterns veto Forge unless forge_score is very high
-      - Delegates only when forge_score >= router_forge_threshold (default 3.0)
+      - A Forge score still has to clear ``router_forge_threshold`` (default 3.0)
+      - The 32b runs only when ``_turn_needs_heavy`` says so. After the 7B intent
+        step, that is multi_step or clearly complex code. A follow-up, a status
+        check, and any other straightforward ask stay on the 7b.
     """
 
     # --- Forge signal groups (pattern, weight) ---
@@ -1167,7 +1528,12 @@ class ModelRouter:
         threshold = float(_host.CFG.get("router_forge_threshold", 3.0))
         strong = float(_host.CFG.get("router_forge_strong_threshold", 5.0))
 
-        msg = message.strip()
+        # Score the operator's words. Inlined PDF text must not look like a long coding task.
+        msg = _operator_ask(message)
+        if not msg and _message_has_attachment(message):
+            msg = "summarize the attached document"
+        elif not msg:
+            msg = (message or "").strip()
         if force_forge:
             return RoutingDecision(
                 "forge", forge_model, "manual /forge override", "coding", 1.0, 99.0, 0.0,
@@ -1248,6 +1614,45 @@ class ModelRouter:
         else:
             delegate = False
             reason = "Primus orchestration (Forge threshold not met)"
+
+        # The score can still say "Forge" for a short new script. The 32b is reserved
+        # for multi-step, multi-file, and complex code. A short example stays on the 7b.
+        if delegate and not _turn_needs_heavy(msg, forge_score):
+            delegate = False
+            reason = "medium turn — staying on 7b (32b reserved for deep or multi-step work)"
+        try:
+            from primus.core.intent import current_intent  # noqa: PLC0415
+
+            hint = current_intent()
+        except Exception:  # noqa: BLE001
+            hint = None
+        code_heavy = _coding_needs_heavy_model(msg)
+        if code_heavy is False:
+            delegate = False
+            reason = "simple code — staying on 7b"
+        elif code_heavy is True:
+            delegate = True
+            reason = "complex or multi-file code — 32b"
+        elif hint is not None and hint.intent == "code" and not hint.simple:
+            delegate = True
+            reason = "complex code — 32b"
+        elif hint is not None and hint.simple and hint.intent != "code":
+            delegate = False
+            reason = f"{hint.intent} — staying on 7b"
+        # A not-simple code label must not pull the 32b for "and tomorrow?"
+        # or "what about next week?". Complex code above still wins.
+        if _straightforward_followup(msg) and code_heavy is not True:
+            delegate = False
+            reason = "follow-up — staying on 7b"
+        elif (
+            code_heavy is not True
+            and (
+                (hint is not None and hint.intent == "status")
+                or bool(_STATUS_STAY_RE.search(msg) and not _MULTI_STEP_RE.search(msg))
+            )
+        ):
+            delegate = False
+            reason = "status — staying on 7b"
 
         agent_id = "forge" if delegate else "primus"
         model_name = forge_model if delegate else primus_model
@@ -1332,7 +1737,9 @@ def _invoke_graph_with_timeout(
         except Exception as exc:  # noqa: BLE001
             exc_box.append(exc)
 
-    t = threading.Thread(target=_run, daemon=True, name="primus-graph-invoke")
+    # The worker must see this turn's intent and tool pack (both ContextVars).
+    ctx = contextvars.copy_context()
+    t = threading.Thread(target=ctx.run, args=(_run,), daemon=True, name="primus-graph-invoke")
     t.start()
 
     waited = 0.0
@@ -1421,7 +1828,13 @@ def _agent_context_from_state(state: PrimusGraphState, **overrides: Any) -> dict
     rag = overrides.get("rag_context") or state.get("rag_context") or "(No knowledge retrieved.)"
     return {
         "mode": str(overrides.get("mode") or state.get("mode") or _host.PrimusSession.mode.value),
-        "memory": str(overrides.get("memory") or _host.memory_context_block()),
+        "memory": str(
+            overrides.get("memory")
+            if overrides.get("memory") is not None
+            else _host.memory_context_block(
+                str(overrides.get("current_step") or state.get("input") or "")
+            )
+        ),
         "rag_context": str(rag),
         "plan": str(overrides.get("plan") or state.get("plan") or ""),
         "step_num": str(overrides.get("step_num") or "1"),
@@ -1571,9 +1984,19 @@ def invoke_step_agent(
             "configurable": {"thread_id": thread_id},
             # Hard cap on react-loop steps: a runaway tool chain exits with a clean
             # GraphRecursionError (caught + retried by the caller) instead of spinning forever.
-            "recursion_limit": int(_host.CFG.get("agent_recursion_limit", 30)),
+            "recursion_limit": _recursion_limit_for(llm),
         },
     )
+
+
+def _recursion_limit_for(llm: Any) -> int:
+    """7b react loops stay at agent_recursion_limit. A 32b turn gets a slightly higher cap."""
+    tag = ""
+    if llm is not None:
+        tag = str(getattr(llm, "model", "") or getattr(llm, "model_name", "") or "")
+    if "32b" in tag:
+        return int(_host.CFG.get("heavy_recursion_limit", 36))
+    return int(_host.CFG.get("agent_recursion_limit", 30))
 
 
 def make_chat_ollama(
@@ -2035,6 +2458,22 @@ def _redirect_gmail_auth_guidance(out: str) -> str:
     return out
 
 
+def _substantive_from_messages(messages: Any) -> str:
+    """Last real tool or assistant text when the graph left final_answer empty.
+
+    Skips blank turns and lines that are only a Thought/Action echo.
+    """
+    for item in reversed(list(messages or [])):
+        content = item.get("content") if isinstance(item, dict) else getattr(item, "content", "")
+        text = coerce_message_text(content).strip()
+        if not text:
+            continue
+        if re.match(r"(?i)^(thought|action|action input|observation)\s*:", text):
+            continue
+        return text
+    return ""
+
+
 def polish_response(text: Any) -> str:
     """Final post-processing layer — strip technical artifacts, robotic filler, normalize.
 
@@ -2099,6 +2538,14 @@ def polish_response(text: Any) -> str:
     out = re.sub(r"[ \t]+\n", "\n", out)
     out = re.sub(r"\n{3,}", "\n\n", out)
     out = out.strip()
+
+    # Tool dumps: drop shell echoes, "Weather — Will:" labels, and raw [dir] listings.
+    try:
+        from primus.core.present import polish_tool_text  # noqa: PLC0415
+
+        out = polish_tool_text(out)
+    except Exception:  # noqa: BLE001 — wording must never drop a real answer
+        pass
 
     # Anti-refusal safety net: turn obsolete manual Gmail-auth advice / dead-end email refusals into
     # a concrete tool step (append-only; no-op for everything else).
@@ -2320,9 +2767,12 @@ def build_agent_graph(
     """Build LangGraph plan→execute loop for Primus or Forge."""
     temp_key = "forge_temperature" if agent_id == "forge" else "primus_temperature"
     temperature = float(_host.CFG.get(temp_key, 0.2 if agent_id == "forge" else 0.25))
-    num_predict = int(
-        _host.CFG.get("forge_num_predict", 2048) if agent_id == "forge" else _host.CFG.get("primus_num_predict", 768)
-    )
+    if agent_id == "forge":
+        num_predict = int(_host.CFG.get("forge_num_predict", 2560))
+    elif "32b" in (model_name or ""):
+        num_predict = int(_host.CFG.get("heavy_num_predict", 1024))
+    else:
+        num_predict = int(_host.CFG.get("primus_num_predict", 768))
     planner_prompt = planner_prompt or (
         FORGE_PLANNER_PROMPT if agent_id == "forge" else PLANNER_PROMPT
     )
@@ -2391,7 +2841,7 @@ def build_agent_graph(
 
         current = steps[idx]
         _host.PrimusSession.emit_think(f"Step {idx + 1}/{len(steps)}", current, "running")
-        mem = _host.memory_context_block()
+        mem = _host.memory_context_block(state.get("input") or current)
         today = datetime.now().strftime("%A, %Y-%m-%d %H:%M")
         rag = state.get("rag_context") or "(No knowledge retrieved.)"
         task = f"Execute step {idx + 1}/{len(steps)}: {current}\nOriginal task: {state['input']}\n\n{STEP_PROMPT}"
@@ -2513,7 +2963,7 @@ def build_agent_graph(
             _host.PrimusSession.emit_think("Halted", "Stopped before execution", "error")
             return {"final_answer": "⏹ Halted before I started — nothing was run."}
         _host.PrimusSession.emit_think("Executing", state["input"][:120], "running")
-        mem = _host.memory_context_block()
+        mem = _host.memory_context_block(state.get("input") or "")
         today = datetime.now().strftime("%A, %Y-%m-%d %H:%M")
         rag = state.get("rag_context") or "(No knowledge retrieved.)"
         current = (state.get("steps") or ["Task"])[0]
@@ -2619,10 +3069,21 @@ def init_agent_graphs(*, force: bool = False) -> dict[str, Any]:
         return {}
     if _host._agent_graphs and not force:
         return _host._agent_graphs
+    primus_name = _host.CFG.get("model", _host.DEFAULT_MODEL)
+    forge_name = _host.CFG.get("forge_model", _host.FORGE_MODEL)
     _host._agent_graphs = {
-        "primus": build_primus_graph(_host.CFG.get("model", _host.DEFAULT_MODEL)),
-        "forge": build_forge_graph(_host.CFG.get("forge_model", _host.FORGE_MODEL)),
+        "primus": build_primus_graph(primus_name),
+        "forge": build_forge_graph(forge_name),
     }
+    # Non-coding heavy turns (multi-step tool work) stay on PRIMUS_SYSTEM but use the 32b.
+    if forge_name and forge_name != primus_name:
+        try:
+            _host._agent_graphs["primus_heavy"] = build_agent_graph(
+                forge_name, PRIMUS_SYSTEM, agent_id="primus"
+            )
+            _host.log.info("Built heavy Primus graph: %s", forge_name)
+        except Exception as exc:  # noqa: BLE001
+            _host.log.warning("Heavy Primus graph unavailable (%s) — deep turns stay on the 7b", exc)
     # Optional small-model Primus graph for dynamic switching (same tools/prompt, faster model).
     if bool(_host.CFG.get("dynamic_switching_enabled", True)) and _fast_model_available():
         try:
@@ -2679,18 +3140,20 @@ def warm_up_models_async() -> None:
 # ---------------------------------------------------------------------------
 # Sequential model policy — keep only ONE heavy model resident at a time.
 #
-# On the Ryzen laptop, having Primus (qwen2.5:7b) and Forge (qwen2.5-coder:7b) both
-# loaded means two llama-server processes competing for RAM/CPU → heat + slowdowns.
-# We evict the idle heavy model when switching agents. The light fast-chat model
-# (llama3.2:3b) is intentionally kept loaded as the always-on lightweight fallback.
+# qwen2.5:7b is the daily model. qwen2.5-coder:32b loads only for a heavy turn.
+# Keeping both resident means two llama-server processes competing for RAM.
+# A distinct non-3b fast model may stay loaded. The 7b is not pinned: the 32b
+# turn must be allowed to evict it, and a retired 3b is never kept.
 # ---------------------------------------------------------------------------
 
 def _light_models_to_keep() -> set[str]:
-    """Heavy-policy exemptions: the light fast-chat model stays resident as fallback."""
+    """Models the sequential policy must not evict. The daily 7b and the 32b are not pinned."""
     keep: set[str] = set()
     if bool(_host.CFG.get("fast_chat_tier", True)) or bool(_host.CFG.get("dynamic_switching_enabled", True)):
-        fast = _host.CFG.get("primus_fast_model") or _host.CFG.get("fast_fallback_model")
-        if fast:
+        fast = str(_host.CFG.get("primus_fast_model") or _host.CFG.get("fast_fallback_model") or "")
+        main = str(_host.CFG.get("model", _host.DEFAULT_MODEL) or "")
+        forge = str(_host.CFG.get("forge_model", _host.FORGE_MODEL) or "")
+        if fast and fast != main and fast != forge and not fast.endswith(":3b") and "llama3.2" not in fast:
             keep.add(fast)
     return keep
 
@@ -2896,8 +3359,11 @@ def _kb_answer_eligible(decision: "RoutingDecision", message: str) -> bool:
 
 
 def _fast_model_available() -> bool:
-    fast = _host.CFG.get("primus_fast_model") or ""
+    fast = str(_host.CFG.get("primus_fast_model") or "")
     if not fast or fast == _host.CFG.get("model", _host.DEFAULT_MODEL):
+        return False
+    # The 3b tier is retired. A leftover llama3.2:3b tag must not load a third model.
+    if fast.endswith(":3b") or "llama3.2" in fast:
         return False
     try:
         installed = list(_host.get_ollama_details().get("models") or [])
@@ -2947,26 +3413,50 @@ def _coding_needs_context(message: str) -> bool:
 
 
 def _is_fast_coding(decision: "RoutingDecision", message: str) -> bool:
-    """Eligible for the single-shot fast coding path: a small, self-contained NEW-code ask.
+    """Eligible for the single-shot coding path: a small, self-contained NEW-code ask on the 7b.
 
-    Deliberately conservative — only the clear 'write a little script/function' case bypasses
-    the plan→step→summarize graph. Anything touching existing code, pasted snippets, multi-step
-    work, or long prompts goes through the full Forge graph (with its verification loop).
+    Heavy turns (agent_id forge) stay on the 32b graph. Anything touching existing code,
+    pasted snippets, multi-step work, or long prompts does not take this one-shot.
     """
     if not bool(_host.CFG.get("fast_coding_enabled", True)):
         return False
-    if decision.agent_id != "forge":
+    if decision.agent_id == "forge":
         return False
     msg = (message or "").strip()
     if not msg or len(msg) > int(_host.CFG.get("fast_coding_max_chars", 320)):
         return False
     if "```" in msg or _MULTI_STEP_RE.search(msg):
         return False
-    if _coding_needs_context(msg):
+    if _coding_needs_heavy_model(msg) is True:
         return False
-    if not is_forge_model_ready():
+    # A named file or the operator's own project needs the 7b graph (it can open the file).
+    # "Explain this function" with no path is still a one-shot.
+    if _coding_needs_context(msg) and (
+        _CODE_PATH_RE.search(msg)
+        or re.search(r"\b(my|our|existing|current|repo|primus|admin_assistant)\b", msg, re.I)
+    ):
         return False
-    return ModelRouter.coding_subtype(msg) == "new_script"
+    subtype = ModelRouter.coding_subtype(msg)
+    if subtype == "new_script":
+        return True
+    # A basic explanation or a short example, with no file to open.
+    return subtype == "general" and bool(_SIMPLE_CODE_RE.search(msg))
+
+
+def _needs_tool_path(message: str) -> bool:
+    """True when a tool-less chat call would time out or invent an answer.
+
+    Inlined attachment text is not a tool request. That turn is one 7B call
+    under the longer attachment budget.
+    """
+    if _message_has_attachment(message):
+        return False
+    ask = _operator_ask(message) or (message or "")
+    return bool(
+        _FAST_CHAT_TOOL_HINT_RE.search(ask)
+        or _PULSE_VETO_RE.search(ask)
+        or _FAST_CHAT_KB_HINT_RE.search(ask)
+    )
 
 
 def route_prompt(decision: "RoutingDecision", message: str) -> dict[str, Any]:
@@ -2979,6 +3469,56 @@ def route_prompt(decision: "RoutingDecision", message: str) -> dict[str, Any]:
     `no_plan=True` is a hard contract, not a hint: invoke_primus must answer that turn with a
     single bounded call and is forbidden from entering the planning graph, whatever happens.
     """
+    # 7B intent already ran. A clear simple label prefers the matching fast path.
+    try:
+        from primus.core.intent import current_intent  # noqa: PLC0415
+
+        hint = current_intent()
+    except Exception:  # noqa: BLE001
+        hint = None
+    ask = _operator_ask(message) or message
+    # The file text is already in the message. One 7B call, on the attachment
+    # budget, unless the ask itself is clearly complex or multi-step.
+    if (
+        _message_has_attachment(message)
+        and decision.agent_id != "forge"
+        and not _turn_needs_heavy(ask)
+    ):
+        return {"path": "fast_chat", "agent_id": "primus", "needs_rag": False, "no_plan": True,
+                "reason": "attached document → one 7b call, longer budget, no plan"}
+    if hint is not None and hint.prefers_fast_path() and decision.agent_id != "forge":
+        if hint.intent == "code" and _is_fast_coding(decision, ask):
+            return {"path": "fast_coding", "agent_id": "primus", "needs_rag": False,
+                    "no_plan": False,
+                    "reason": "intent code (simple) → single 7b call"}
+        # A tool or knowledge word must not take the short tool-less call, even
+        # when the classifier said "chat". Those turns use the 7B graph (240s).
+        if hint.intent == "chat" and not _needs_tool_path(message):
+            return {"path": "fast_chat", "agent_id": "primus", "needs_rag": False, "no_plan": True,
+                    "reason": "intent chat → one 7b call, no tools, no plan"}
+        if hint.intent == "knowledge" and not _message_has_attachment(message):
+            return {"path": "kb_answer", "agent_id": "primus", "needs_rag": True, "no_plan": True,
+                    "reason": "intent knowledge → retrieve + one 7b call, no plan"}
+    # A continuation stays on one 7b call. A tool word falls through to the 7b graph
+    # (that path already has the longer tool budget). Knowledge stays on retrieval.
+    if (
+        decision.agent_id != "forge"
+        and not _message_has_attachment(message)
+        and _straightforward_followup(ask)
+    ):
+        toolish = bool(
+            _FAST_CHAT_TOOL_HINT_RE.search(ask) or _PULSE_VETO_RE.search(ask)
+        )
+        knowledge = bool(
+            (hint is not None and hint.intent == "knowledge")
+            or _FAST_CHAT_KB_HINT_RE.search(ask)
+        )
+        if knowledge and not toolish:
+            return {"path": "kb_answer", "agent_id": "primus", "needs_rag": True, "no_plan": True,
+                    "reason": "follow-up knowledge → retrieve + one 7b call, no plan"}
+        if not toolish:
+            return {"path": "fast_chat", "agent_id": "primus", "needs_rag": False, "no_plan": True,
+                    "reason": "follow-up → one 7b call, no plan"}
     # Knowledge / explain question FIRST ("tell me about X", "what is X", "who is X") with no
     # file/mail/shell/code verb → one bounded chat call. This must match before pulse (leading
     # "hello" is decoration, not a greeting turn) and before the eligibility gates that used to
@@ -2995,6 +3535,7 @@ def route_prompt(decision: "RoutingDecision", message: str) -> dict[str, Any]:
         and not _PULSE_VETO_RE.search(message)
         and not _FAST_CHAT_KB_HINT_RE.search(message)
         and not _KNOWLEDGE_TOOL_VETO_RE.search(message)
+        and not _is_fast_coding(decision, message)
     ):
         return {"path": "fast_chat", "agent_id": "primus", "needs_rag": False, "no_plan": True,
                 "knowledge": True,
@@ -3004,17 +3545,16 @@ def route_prompt(decision: "RoutingDecision", message: str) -> dict[str, Any]:
         return {"path": "fast_chat", "agent_id": "primus", "needs_rag": False, "no_plan": True,
                 "reason": "pulse (greeting/identity/thanks) → one chat call, no tools, no plan"}
     if decision.agent_id == "forge":
-        # Small self-contained coding ask → one focused coder-model call (no graph).
-        if _is_fast_coding(decision, message):
-            return {"path": "fast_coding", "agent_id": "forge", "needs_rag": False,
-                    "no_plan": False,
-                    "reason": "small self-contained coding task → single coder-model call"}
         # Lean context: skip the heavy memory dump for self-contained coding (cleaner, faster).
         needs_rag = True
         if bool(_host.CFG.get("forge_lean_context", True)) and not _coding_needs_context(message):
             needs_rag = False
         return {"path": "forge", "agent_id": "forge", "needs_rag": needs_rag, "no_plan": False,
-                "reason": f"coding/technical → Forge ({decision.reason})"}
+                "reason": f"deep or multi-step → 32b ({decision.reason})"}
+    if _is_fast_coding(decision, message):
+        return {"path": "fast_coding", "agent_id": "primus", "needs_rag": False,
+                "no_plan": False,
+                "reason": "small self-contained coding task → single 7b call"}
     if is_direct_action(message):
         # Tool action (open app, ls, browse…) — no embeddings needed, run immediately.
         return {"path": "direct", "agent_id": "primus", "needs_rag": False, "no_plan": False,
@@ -3159,12 +3699,13 @@ def _fast_chat_answer(
     )
     from primus.core.redact import redact_model_input  # noqa: PLC0415
 
+    attached = _message_has_attachment(message)
     message = redact_model_input(message)
     mem_block = redact_model_input(mem_block)
     values = _agent_context_from_state(
         {},  # type: ignore[arg-type]
         mode=mode,
-        memory=_host.memory_context_block(),
+        memory=_host.memory_context_block(_operator_ask(message) or message),
         rag_context=mem_block,
         plan="",
         step_num="1",
@@ -3172,13 +3713,29 @@ def _fast_chat_answer(
         current_step=message,
     )
     system = redact_model_input(format_agent_system(FAST_CHAT_SYSTEM, values))
-    prior = [redact_model_input(m) for m in _host.prepare_agent_messages(history)[-6:]]
+    prior = [
+        redact_model_input(m)
+        for m in _host.prepare_agent_messages(history, limit=6)
+    ]
     msgs = [SystemMessage(content=system)] + prior + [
         HumanMessage(content=message)
     ]
-    timeout = timeout_sec or int(_host.CFG.get("fast_chat_invoke_timeout_sec", 15))
-    if timeout <= 0:
-        return polish_response(llm.invoke(msgs).content), model
+    if timeout_sec is None:
+        timeout = _bounded_chat_timeout(
+            pulse=is_pulse_turn(_operator_ask(message) or message) and not attached,
+            attachment=attached,
+        )
+    else:
+        try:
+            timeout = int(timeout_sec)
+        except (TypeError, ValueError):
+            timeout = _CHAT_TIMEOUT_DEFAULT
+        if timeout <= 0:
+            timeout = _CHAT_TIMEOUT_DEFAULT
+        if attached:
+            timeout = min(max(timeout, _CHAT_TIMEOUT_ATTACH_FLOOR), _CHAT_TIMEOUT_ATTACH_CAP)
+        else:
+            timeout = min(timeout, _CHAT_TIMEOUT_CAP)
     box: dict[str, Any] = {}
     err: list[Exception] = []
 
@@ -3199,16 +3756,16 @@ def _fast_chat_answer(
 
 
 def _fast_coding_answer(message: str, history: list, mem_block: str, mode: str) -> tuple[str, str]:
-    """Single-call coding reply on the Forge (coder) model — clean, focused, no plan/step overhead.
+    """Single-call coding reply on the daily 7b — no plan/step overhead, and no 32b load.
 
-    Used for small self-contained asks. Gives qwen2.5-coder a tight context window so it produces
-    high-quality code fast, then tells it to include a verify command in the output.
+    Used for small self-contained asks. Output is capped below the 32b coding budget.
     """
-    model = _host.CFG.get("forge_model", _host.FORGE_MODEL)
+    model = _host.CFG.get("model", _host.DEFAULT_MODEL)
+    cap = min(1536, int(_host.CFG.get("forge_num_predict", 2560)))
     llm = make_chat_ollama(
         model,
-        temperature=float(_host.CFG.get("forge_temperature", 0.15)),
-        num_predict=int(_host.CFG.get("forge_num_predict", 2048)),
+        temperature=float(_host.CFG.get("primus_temperature", 0.2)),
+        num_predict=cap,
     )
     values = _agent_context_from_state(
         {},  # type: ignore[arg-type]
@@ -3221,7 +3778,7 @@ def _fast_coding_answer(message: str, history: list, mem_block: str, mode: str) 
         current_step=message,
     )
     system = format_agent_system(FORGE_FAST_SYSTEM, values)
-    msgs = [SystemMessage(content=system)] + _host.prepare_agent_messages(history)[-4:] + [
+    msgs = [SystemMessage(content=system)] + _host.prepare_agent_messages(history, limit=4) + [
         HumanMessage(content=message)
     ]
     # Bound the single call so a stall degrades cleanly to the full Forge graph instead of hanging.
@@ -3652,20 +4209,14 @@ def _apply_turn_pack(
     tools: Optional[list[str]] = None,
     *,
     need_brain: bool = False,
+    simple: bool = False,
 ) -> str:
-    """One pack per leftover turn. Receptionist ``tools[]`` may select it."""
-    from primus.core.tool_packs import (  # noqa: PLC0415
-        extras_from_named,
-        pack_names,
-        select_pack,
-        set_turn_pack,
-    )
+    """One pack per leftover turn. Simple turns bind only the minimal or relevant pack."""
+    from primus.core.tool_packs import resolve_turn_pack, set_turn_pack  # noqa: PLC0415
 
-    pack = select_pack(text, tools=tools)
-    extra, _refuse = extras_from_named("", pack, tools=tools or [])
-    extra = list(extra)
-    if need_brain and "ask_grok" not in pack_names(pack) and "ask_grok" not in extra:
-        extra.append("ask_grok")
+    pack, extra = resolve_turn_pack(
+        text, tools, simple=simple, need_brain=need_brain,
+    )
     set_turn_pack(pack, extra)
     _host.log.info("turn pack=%s extra=%s", pack, extra)
     return pack
@@ -3855,6 +4406,16 @@ def _invoke_primus_impl(
     except Exception:  # noqa: BLE001 — audit must never fail the turn
         pass
     _host.PrimusSession.emit_think("Received", message[:100], "done")
+    # Route on the operator's words. Inlined file text stays in the model prompt.
+    ask = _operator_ask(message)
+    attached_doc = _message_has_attachment(message)
+    # Local session state on every turn, including fast paths. No model and no retrieval.
+    try:
+        from primus.core.session_state import apply_turn_state  # noqa: PLC0415
+
+        apply_turn_state(ask)
+    except Exception as exc:  # noqa: BLE001 — state must not block an answer
+        _host.log.debug("Session state skipped: %s", exc)
 
     from primus.core.path_mode import (  # noqa: PLC0415 — keep path_mode off the hot import
         current_path_mode,
@@ -3864,7 +4425,10 @@ def _invoke_primus_impl(
         set_path_mode,
     )
 
-    path_ins = inspect_path_message(message)
+    # Path, why, and access look at the operator's words. A PDF body must not
+    # toggle path mode or answer an access question that the user did not ask.
+    route_text = ask if attached_doc else message
+    path_ins = inspect_path_message(route_text)
     if path_ins.toggle_off:
         set_path_mode("primus_path")
     elif path_ins.toggle_on or path_ins.prefix_user:
@@ -3873,7 +4437,7 @@ def _invoke_primus_impl(
     try:
         from primus.core.audit import explain_recent, is_why_ask  # noqa: PLC0415
 
-        if is_why_ask(message):
+        if is_why_ask(route_text):
             _host.PrimusSession.active_agent = "primus"
             _host.PrimusSession.active_model = "audit"
             _host.PrimusSession.last_path = "audit"
@@ -3892,8 +4456,64 @@ def _invoke_primus_impl(
         or (current_path_mode() == "user_path" and len(path_ins.steps) > 1)
     )
 
+    # --- Access: local files and config only. Before the 7B intent call. ---
+    if not skip_fast and not str(route_text or "").lstrip().startswith("/"):
+        try:
+            from primus.core.access import access_answer  # noqa: PLC0415
+
+            report = access_answer(route_text)
+        except Exception as exc:  # noqa: BLE001 — the report must not break the turn
+            _host.log.debug("Access report skipped: %s", exc)
+            report = None
+        if report:
+            _host.PrimusSession.active_agent = "primus"
+            _host.PrimusSession.active_model = "local"
+            _host.PrimusSession.last_path = "access"
+            _host.PrimusSession.emit_think("Access", "Local files and config — no model", "done")
+            return report, list(_host.PrimusSession.thinking_steps)
+
+    # --- Intent: one short 7B call before fast paths and the main agent. Local Ollama only.
+    #     Timeout / bad JSON → existing routing. user_path already lists its steps. ---
+    from primus.core.intent import (  # noqa: PLC0415
+        clear_turn_intent,
+        current_intent,
+        interpret_intent,
+        set_turn_intent,
+    )
+
+    clear_turn_intent()
+    if not skip_fast and ask and not ask.lstrip().startswith("/"):
+        try:
+            set_turn_intent(interpret_intent(ask))
+        except Exception as exc:  # noqa: BLE001 — classification must not break the turn
+            _host.log.debug("Intent classify skipped: %s", exc)
+            clear_turn_intent()
+        classified = current_intent()
+        if classified is not None:
+            ents = ", ".join(classified.entities[:4]) or "—"
+            _host.PrimusSession.emit_think(
+                "Intent",
+                f"{classified.intent} · simple={str(classified.simple).lower()} · {ents}",
+                "done",
+            )
+            if classified.entities:
+                try:
+                    from primus.core.session_state import apply_turn_state  # noqa: PLC0415
+
+                    apply_turn_state(ask, entities=classified.entities)
+                except Exception as exc:  # noqa: BLE001
+                    _host.log.debug("Session entities skipped: %s", exc)
+    classified_now = current_intent()
+    prefer_fast = (not force_forge) and (
+        classified_now is None
+        or classified_now.prefers_fast_path()
+        or _straightforward_followup(ask or message)
+    )
+
+    # An attached file is the question. Do not answer it with a short weather/time
+    # fast path, and do not put it on the aggressive one-shot cap below.
     # --- Step 0: instant local answers (time/date) — no model, no RAG, no network ---
-    if not skip_fast:
+    if not skip_fast and prefer_fast and not attached_doc:
         instant = instant_answer(message)
         if instant is not None:
             _host.PrimusSession.active_agent = "primus"
@@ -3904,7 +4524,7 @@ def _invoke_primus_impl(
 
     # --- Step 0.5: deterministic tool fast-path — run the obvious single tool now,
     #     skipping the planning LLM, RAG, and embeddings entirely (huge speed win). ---
-    if not skip_fast:
+    if not skip_fast and prefer_fast and not attached_doc:
         try:
             tool_ans = fast_tool_answer(message)
         except Exception as exc:  # noqa: BLE001 — never let the fast path break normal routing
@@ -3948,7 +4568,6 @@ def _invoke_primus_impl(
                     "",
                     mode,
                     prefer_main=True,
-                    timeout_sec=max(45, int(_host.CFG.get("fast_chat_invoke_timeout_sec", 15))),
                 )
                 return ans
             except Exception:
@@ -4032,19 +4651,28 @@ def _invoke_primus_impl(
     # --- Smart prompt ingestion: one decisive router picks the cheapest correct path ---
     route = route_prompt(decision, message)
     _host.PrimusSession.last_path = route["path"]
-    _host.PrimusSession.last_intent = decision.intent
+    _classified = current_intent()
+    _host.PrimusSession.last_intent = _classified.intent if _classified is not None else decision.intent
     _host.PrimusSession.emit_think("Route", f"{route['path']} — {route['reason']}", "done")
-    # Leftover receptionist: 3b JSON slots, internal only. Green gates + route_prompt
+    # Leftover receptionist: one bounded JSON call on the 7b, internal only. Green gates + route_prompt
     # knowledge / pulse / forge / kb_answer / fast_coding already won — do not call those.
     # Missing model / timeout / bad JSON → current primus graph. need_brain may
-    # call ask_grok (tool is in build_tools; governor + redact). Never print JSON.
+    # offer ask_grok unless local_only is on. Never print JSON.
+    simple_turn = classify_complexity(message) == "simple"
+    try:
+        from primus.core.brain_governor import local_only_enabled  # noqa: PLC0415
+
+        local_only = local_only_enabled()
+    except Exception:  # noqa: BLE001
+        local_only = True
     if route["path"] == "primus" and agent_id == "primus":
         try:
             from primus.core.receptionist import receive_leftover  # noqa: PLC0415
 
             slots = receive_leftover(message)
             if slots is not None:
-                if slots.need_brain or slots.bucket == "heavy":
+                brain_ok = (slots.need_brain or slots.bucket == "heavy") and not local_only
+                if brain_ok:
                     if "ask_grok" not in slots.tools:
                         slots.tools.append("ask_grok")
                     _host.PrimusSession.emit_think(
@@ -4052,9 +4680,16 @@ def _invoke_primus_impl(
                         "need_brain — ask_grok available",
                         "done",
                     )
+                elif local_only and (slots.need_brain or slots.bucket == "heavy"):
+                    _host.PrimusSession.emit_think(
+                        "Local only",
+                        "External brain stays off — Ollama only",
+                        "done",
+                    )
                 _apply_turn_pack(
                     message, slots.tools,
-                    need_brain=bool(slots.need_brain or slots.bucket == "heavy"),
+                    need_brain=brain_ok,
+                    simple=simple_turn,
                 )
                 _host.PrimusSession.emit_think(
                     "Receptionist",
@@ -4062,13 +4697,13 @@ def _invoke_primus_impl(
                     "done",
                 )
             else:
-                _apply_turn_pack(message)
+                _apply_turn_pack(message, simple=simple_turn)
         except Exception as exc:  # noqa: BLE001 — receptionist must not fail the leftover graph
             _host.log.debug("Receptionist skipped: %s", exc)
-            _apply_turn_pack(message)
+            _apply_turn_pack(message, simple=simple_turn)
     else:
         # Forge / direct still hit create_agent — bind a pack from the message.
-        _apply_turn_pack(message)
+        _apply_turn_pack(message, simple=simple_turn)
     # Meta-learning: remember the chosen route so feedback can adapt future routing.
     try:
         _host.get_metrics().record_route(agent_id, decision.intent)
@@ -4175,12 +4810,6 @@ def _invoke_primus_impl(
                 # Knowledge answers need the main model's fidelity (same as kb_turn); when the
                 # fast model is missing _fast_chat_answer falls back to the main model anyway.
                 prefer_main=kb_turn or knowledge_turn,
-                # A cold model's first token can blow past the 15s chat bound — knowledge and
-                # KB turns get the same longer leash so the answer actually arrives.
-                timeout_sec=(
-                    max(45, int(_host.CFG.get("fast_chat_invoke_timeout_sec", 15)))
-                    if (kb_turn or knowledge_turn) else None
-                ),
             )
             _host.PrimusSession.active_model = used_model
             _host.PrimusSession.emit_think("Chat tier", "Replied", "done")
@@ -4208,17 +4837,18 @@ def _invoke_primus_impl(
             _host.log.warning("Fast tier failed (%s) — falling back to full graph", exc)
             _host.PrimusSession.emit_think("Fast tier", "Fell back to full path", "error")
 
-    # --- Step 4.6: fast coding tier — one focused coder-model call for small self-contained asks.
-    #     Skips plan→step→summarize entirely (big latency win) while keeping Forge code quality. ---
-    if route["path"] == "fast_coding" and agent_id == "forge" and is_forge_model_ready():
+    # --- Step 4.6: medium coding — one 7b call for a small self-contained ask.
+    #     The 32b is not loaded for this path. ---
+    if route["path"] == "fast_coding":
         try:
-            enforce_sequential_models(_host.CFG.get("forge_model", _host.FORGE_MODEL), label="Forge")
+            medium_model = _host.CFG.get("model", _host.DEFAULT_MODEL)
+            enforce_sequential_models(medium_model, label="Primus")
             _host.PrimusSession.emit_think(
-                "Fast coding", "Self-contained task → single Forge call (no graph)", "running"
+                "Fast coding", "Self-contained task → single 7b call (no graph)", "running"
             )
             answer, used_model = _fast_coding_answer(message, history, mem_block, mode)
             answer = _forge_autocorrect(message, answer, used_model)
-            _host.PrimusSession.active_agent = "forge"
+            _host.PrimusSession.active_agent = "primus"
             _host.PrimusSession.active_model = used_model
             _host.PrimusSession.last_path = "fast_coding"
             _host.PrimusSession.emit_think("Fast coding", "Delivered", "done")
@@ -4226,16 +4856,11 @@ def _invoke_primus_impl(
                 bool(_host.CFG.get("show_model_badge_in_chat", False))
                 and not answer.startswith(("**Forge", "**Primus"))
             ):
-                answer = f"**Forge** · `{used_model}`\n\n" + answer
-            # Sequential policy: release Forge + warm Primus back up in the background.
-            if bool(_host.CFG.get("sequential_models", True)):
-                threading.Thread(
-                    target=release_forge_reload_primus, name="primus-seq-release", daemon=True
-                ).start()
+                answer = f"**Primus** · `{used_model}`\n\n" + answer
             return answer, list(_host.PrimusSession.thinking_steps)
         except Exception as exc:  # noqa: BLE001
-            _host.log.warning("Fast coding tier failed (%s) — falling back to full Forge graph", exc)
-            _host.PrimusSession.emit_think("Fast coding", "Fell back to full Forge path", "error")
+            _host.log.warning("Fast coding tier failed (%s) — falling back to the 7b graph", exc)
+            _host.PrimusSession.emit_think("Fast coding", "Fell back to the 7b path", "error")
 
     graph = graphs.get(agent_id) or graphs.get("primus")
     if graph is None:
@@ -4252,6 +4877,24 @@ def _invoke_primus_impl(
     except Exception as exc:  # noqa: BLE001
         _host.log.debug("Dynamic switch skipped: %s", exc)
 
+    # Multi-step tool work that is not a Forge coding task still needs the 32b,
+    # on the Primus prompt. This wins over the fast graph.
+    heavy_name = _host.CFG.get("forge_model", _host.FORGE_MODEL)
+    heavy_turn = False
+    if (
+        agent_id == "primus"
+        and not force_primus
+        and graphs.get("primus_heavy")
+        and heavy_name
+        and heavy_name != _host.CFG.get("model", _host.DEFAULT_MODEL)
+        and _turn_needs_heavy(message, decision.forge_score)
+    ):
+        graph = graphs["primus_heavy"]
+        model_name = heavy_name
+        heavy_turn = True
+        _host.PrimusSession.active_model = model_name
+        _host.PrimusSession.emit_think("Heavy model", f"Deep or multi-step → {model_name}", "done")
+
     payload = {
         "input": message,
         "messages": _host.prepare_agent_messages(history),
@@ -4265,14 +4908,14 @@ def _invoke_primus_impl(
     }
     # Hard timeout for BOTH agents now (previously Primus ran uncapped and could hang the UI).
     # The thread-based wrapper also polls for Halt, so this bounds every model/tool chain.
-    if agent_id == "forge":
-        timeout = int(_host.CFG.get("forge_invoke_timeout_sec", 180))
+    if agent_id == "forge" or heavy_turn:
+        timeout = _bounded_forge_timeout()
     else:
         timeout = int(_host.CFG.get("primus_invoke_timeout_sec", 240))
 
     # --- Sequential model policy: evict the OTHER heavy model before running this one,
     #     so only one of Primus/Forge is resident (the light fast model stays as fallback). ---
-    forge_engaged = agent_id == "forge"
+    forge_engaged = agent_id == "forge" or heavy_turn
     try:
         enforce_sequential_models(model_name, label=agent_label)
     except Exception as exc:  # noqa: BLE001 — model housekeeping must never break a turn
@@ -4298,10 +4941,12 @@ def _invoke_primus_impl(
                 if msgs:
                     answer = coerce_message_text(msgs[-1].content)
             if not answer:
+                answer = _substantive_from_messages(result.get("messages") or [])
+            if not answer:
                 if has_file_write_steps(path_ins.steps):
-                    answer = "✗ Write did not run."
+                    answer = "The write did not run."
                 else:
-                    answer = "All taken care of — let me know where you want to go next."
+                    answer = "I didn't get a result back from that."
 
             # Closed-loop verification: if Forge produced code, compile/lint it and self-repair once.
             if agent_id == "forge":
@@ -4668,7 +5313,15 @@ def _background_bind(task: str) -> tuple[list, str, list[str]]:
     extra, refuse = extras_from_named(task, pack)
     extra = [] if refuse else list(extra)
     named = named_tools_in_text(task)
-    want_brain = pack == "brain" or "ask_grok" in extra or "ask_grok" in named
+    try:
+        from primus.core.brain_governor import local_only_enabled  # noqa: PLC0415
+
+        local_only = local_only_enabled()
+    except Exception:  # noqa: BLE001
+        local_only = True
+    want_brain = (not local_only) and (
+        pack == "brain" or "ask_grok" in extra or "ask_grok" in named
+    )
     if want_brain and "ask_grok" not in extra:
         extra.append("ask_grok")
     registry = _host.build_tools()
@@ -4768,7 +5421,7 @@ def _run_background_agent(
         FORGE_SYSTEM,
         {
             "mode": "execute",
-            "memory": _host.memory_context_block(),
+            "memory": _host.memory_context_block(task),
             "rag_context": "(Background task — gather context with your tools as needed.)",
             "plan": "",
             "step_num": "1", "step_total": "1",
@@ -4965,7 +5618,10 @@ def render_background_agents_html() -> str:
     """Compact monitor for Menu → Activity: one row per task with status + last progress."""
     tasks = BackgroundAgentManager.list()
     if not tasks:
-        return '<div class="bg-panel empty">No background agents running. Use <code>/bg &lt;task&gt;</code>.</div>'
+        return (
+            '<div class="bg-panel empty">No background agents. '
+            'Start one with <code>/bg</code> and a task. Progress shows up here.</div>'
+        )
     rows = []
     for t in tasks[:8]:
         icon = _BG_STATUS_ICONS.get(t["status"], "•")

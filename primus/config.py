@@ -96,21 +96,25 @@ DOWNLOADS = _env_dir("PRIMUS_DOWNLOADS_DIR", HOME / "Downloads")
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "model": os.environ.get("PRIMUS_MODEL", "qwen2.5:7b"),
-    "forge_model": os.environ.get("PRIMUS_FORGE_MODEL", "qwen2.5-coder:7b"),
+    "forge_model": os.environ.get("PRIMUS_FORGE_MODEL", "qwen2.5-coder:32b"),
     "auto_delegate_forge": True,
     "router_forge_threshold": 3.0,
     "router_forge_strong_threshold": 5.0,
+    # Coding score floor before a turn may leave the 7b for the 32b. Below this, medium
+    # coding stays on qwen2.5:7b even when the older Forge threshold would have delegated.
+    "router_heavy_min_score": 4.5,
     "response_cache_ttl_sec": 300,
     "response_cache_max": 64,
     "forge_fallback_to_primus": True,
-    "forge_invoke_timeout_sec": 180,
-    # --- Forge coding performance (qwen2.5-coder punches above its weight) ---
-    # Fast coding path: short, self-contained one-file coding asks ("write a 15-line script
-    # that…") skip the plan→step→summarize graph and answer in ONE focused coder-model call.
+    # 32b graph budget. Raised from 180 so a real Forge reply can finish.
+    # The invoke path clamps this to 300s and refuses 0 (which used to mean no cap).
+    "forge_invoke_timeout_sec": 240,
+    # --- Heavy model (qwen2.5-coder:32b) — deep reasoning and multi-step work only ---
+    # Short new-script asks stay on the 7b in one call. The 32b is not the daily coder.
     "fast_coding_enabled": True,
-    "fast_coding_max_chars": 320,          # only trivial/self-contained asks take the fast path
-    "forge_fast_invoke_timeout_sec": 100,  # tighter cap for the single-shot fast coding call
-    "forge_max_plan_steps": 4,             # keep Forge plans focused (2–4 steps)
+    "fast_coding_max_chars": 320,          # only trivial/self-contained asks take the 7b one-shot
+    "forge_fast_invoke_timeout_sec": 100,  # tighter cap for the single-shot coding call
+    "forge_max_plan_steps": 5,             # 32b plans may run one step deeper than the old cap of 4
     "coding_verify_on_generate": True,     # Forge is told to verify code with verify_python after writing
     "forge_lean_context": True,            # prune RAG/memory on self-contained coding (cleaner context, faster)
     # Automated self-correction: after Forge delivers code, compile/lint it for real and, if it has
@@ -132,22 +136,28 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "forge_temperature": 0.15,
     # --- Speed / responsiveness tuning ---
     "ollama_keep_alive": "30m",   # keep model resident in RAM/VRAM between requests (avoids reload stalls)
-    # --- Sequential model policy (only one HEAVY model in RAM at a time on the Ryzen laptop) ---
-    "sequential_models": True,    # unload Primus before Forge runs, and vice-versa; reload after
+    # --- Sequential model policy (only one heavy model in RAM at a time) ---
+    # Daily model is qwen2.5:7b. qwen2.5-coder:32b loads only for a heavy turn, then unloads.
+    "sequential_models": True,    # unload the 7b before the 32b runs, and reload the 7b after
     "sequential_warm_reload": True,  # after Forge, warm Primus back up in the background
     "ollama_num_ctx": 4096,        # context window — smaller = faster prompt processing
-    "primus_num_predict": 768,     # cap Primus output tokens for snappy replies
-    "forge_num_predict": 2048,     # Forge may need longer code output
+    "primus_num_predict": 768,     # cap 7b output tokens for snappy replies
+    "forge_num_predict": 2560,     # 32b heavy coding may write a longer answer
+    "heavy_num_predict": 1024,     # non-Forge 32b turns: a step above the 7b cap, not the full 2560
     "ollama_top_k": 30,
     "ollama_top_p": 0.9,
     "skip_summary_max_chars": 900,  # below this, present step results directly (no extra LLM call)
     "warm_up_models": True,          # preload Primus model on startup for a fast first reply
-    # --- Fast conversational tier: light model answers pure chat in one call (no graph/tools) ---
+    # --- Chat tier: pure chat is one call on the daily 7b. No separate 3b model. ---
     "fast_chat_tier": True,
-    "primus_fast_model": os.environ.get("PRIMUS_FAST_MODEL", "llama3.2:3b"),
-    # Hard cap on that single chat call. A greeting or identity turn is never worth more than a
-    # few seconds, and on expiry Primus answers plainly — it must never escalate to the planner.
-    "fast_chat_invoke_timeout_sec": 15,
+    "primus_fast_model": os.environ.get("PRIMUS_FAST_MODEL", "qwen2.5:7b"),
+    # Budget for one chat call (follow-ups and straightforward replies). The invoke path
+    # clamps this to 180s and refuses 0. Greetings stay on a shorter pulse budget.
+    # An attached file (a PDF, for example) uses a floor of 180s and its own hard cap of
+    # 240s, so reading the document is not cut off by the chat cap. Tool turns use the 7B
+    # graph budget (primus_invoke_timeout_sec, 240s) instead of this one-shot.
+    # On expiry Primus answers plainly — it must never escalate to the planner.
+    "fast_chat_invoke_timeout_sec": 120,
     # --- Deterministic tool fast-path: clear single-tool requests (weather, open app,
     #     battery, disk) run the tool directly in code — no planning LLM, no RAG. ---
     "fast_tool_path": True,
@@ -158,6 +168,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "host": os.environ.get("PRIMUS_HOST", "127.0.0.1"),
     "port": int(os.environ.get("PRIMUS_PORT", "7860")),
     "execution_mode": "execute",
+    # Local only: Ollama 7B/32B. ask_grok and the xAI brain stay off until this is false.
+    "local_only": True,
     # primus_path (default): Primus decides order and tools (leftover → plan→execute graph).
     # user_path: execute the operator's listed steps in that order. No extra store file.
     "path_mode": "primus_path",
@@ -202,6 +214,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tool_retry_max": 2,           # transient tool errors retry; then the error reaches the model
     "no_progress_repeat_limit": 3, # identical tool+args calls this many times → forced stop
     "agent_recursion_limit": 30,   # hard cap on react-loop steps per agent run
+    "heavy_recursion_limit": 36,   # slightly higher cap when the 32b is the model on the turn
     "prune_tool_traces": True,     # clear old tool outputs mid-run (no LLM call) when context grows
     "prune_trigger_tokens": 3000,  # estimated token count that triggers pruning
     "prune_keep_messages": 6,      # most-recent messages whose tool outputs stay intact
@@ -249,8 +262,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "stt_language": "",               # "" = auto-detect; or e.g. "en"
     "stt_autosubmit": True,           # auto-send transcription (off = drop into box to edit)
     "stt_beam_size": 5,
-    "typing_effect": True,            # character-by-character typewriter reveal for replies
-    "typing_speed": 18,               # ms per character when typing_effect is on (1 fast … 100 slow)
+    "typing_effect": True,            # brief reveal of a finished reply (a few frames, not per character)
+    "typing_speed": 18,               # 1 fast … 100 slow; paces the whole reveal, not ms per character
     "rag_chunk_size": 600,
     "rag_chunk_overlap": 80,
     "web_search_enabled": True,
@@ -274,8 +287,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ollama_flash_attention": True,        # OLLAMA_FLASH_ATTENTION=1 (faster, less VRAM)
     "hsa_override_gfx_version": "auto",     # "" = off · "auto" = detect Ryzen AI iGPU · e.g. "11.0.2"
     "gpu_apply_env": True,                  # set OLLAMA_*/HSA_* env at startup
-    # --- Smaller fast fallback model + intelligent dynamic model switching ---
-    "fast_fallback_model": "llama3.2:3b",  # small/quantized model for snappy simple turns
+    # Fast tier matches the daily 7b, so dynamic switching has no third model to load.
+    "fast_fallback_model": "qwen2.5:7b",
     "dynamic_switching_enabled": True,     # auto-switch to the fast model when big model is slow
     "slow_threshold_sec": 5.0,             # a simple turn slower than this trips fast mode
     "fast_model_switch_cooldown": 300,     # seconds to stay in fast mode after tripping
@@ -324,7 +337,59 @@ def load_config_file(script_path: Any, python_path: str) -> dict[str, Any]:
 
     if not cfg.get("ingest_paths"):
         cfg["ingest_paths"] = [str(Path(p).expanduser()) for p in DEFAULT_INGEST_PATHS]
+    _migrate_model_roles(cfg)
     return cfg
+
+
+# One-shot role migration. A later manual model pick is left alone.
+_MODEL_ROLES_V = 5
+_RETIRED_FAST = {"llama3.2:3b", "qwen2.5:3b"}
+_OLD_FORGE_7B = {"qwen2.5-coder:7b", "qwen2.5-coder:7b-instruct"}
+
+
+def _is_retired_3b(name: str) -> bool:
+    tag = (name or "").strip()
+    return bool(tag) and (tag in _RETIRED_FAST or tag.endswith(":3b") or tag.startswith("llama3.2"))
+
+
+def _migrate_model_roles(cfg: dict[str, Any]) -> None:
+    """Daily model is qwen2.5:7b. qwen2.5-coder:32b is heavy only. The 3b tier is retired.
+
+    Runs once (``model_roles_v``). Disk values that are still the previous shipped defaults
+    move forward; any other tag is a deliberate choice and stays. v4 moved the shipped
+    chat-call budget of 15s to 60s. v5 moves that shipped 60s, and a still-unmigrated 15s,
+    to 120s. A custom chat budget stays, then the invoke path clamps it.
+    """
+    try:
+        seen = int(cfg.get("model_roles_v") or 0)
+    except (TypeError, ValueError):
+        seen = 0
+    if seen >= _MODEL_ROLES_V:
+        return
+
+    if seen < 3:
+        # The general 32b was the previous daily driver. Light and medium turns use the 7b.
+        if str(cfg.get("model") or "") == "qwen2.5:32b":
+            cfg["model"] = "qwen2.5:7b"
+        daily = str(cfg.get("model") or "qwen2.5:7b")
+        for key in ("primus_fast_model", "fast_fallback_model"):
+            if _is_retired_3b(str(cfg.get(key) or "")):
+                cfg[key] = daily
+        if str(cfg.get("forge_model") or "") in _OLD_FORGE_7B:
+            cfg["forge_model"] = "qwen2.5-coder:32b"
+        # Depth bump only when the file still has the old shipped numbers.
+        if cfg.get("forge_num_predict") == 2048:
+            cfg["forge_num_predict"] = 2560
+        if cfg.get("forge_max_plan_steps") == 4:
+            cfg["forge_max_plan_steps"] = 5
+        # The old shipped Forge cap. A custom value (anything other than 180) stays.
+        if cfg.get("forge_invoke_timeout_sec") == 180:
+            cfg["forge_invoke_timeout_sec"] = 240
+    # Shipped chat budgets only. 15s was the original cap; 60s was the v4 cap.
+    # Anything else is a deliberate choice and stays. The invoke path then clamps it.
+    if cfg.get("fast_chat_invoke_timeout_sec") in (15, 60):
+        cfg["fast_chat_invoke_timeout_sec"] = 120
+    cfg["model_roles_v"] = _MODEL_ROLES_V
 
 
 def save_config_file(cfg: dict[str, Any]) -> None:
@@ -359,8 +424,7 @@ def apply_cli_and_sync(cfg: dict[str, Any], args: Optional[argparse.Namespace] =
         if getattr(args, "compact", False):
             cfg["compact_mode"] = True
 
-    # Keep the fast tier and the small fallback model in sync: if no explicit fast
-    # chat model is set, derive it from fast_fallback_model so both point at the small model.
+    # Keep the two fast-tier keys in sync. Both default to the daily 7b; there is no 3b.
     if not cfg.get("primus_fast_model") and cfg.get("fast_fallback_model"):
         cfg["primus_fast_model"] = cfg["fast_fallback_model"]
     elif not cfg.get("fast_fallback_model") and cfg.get("primus_fast_model"):

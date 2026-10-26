@@ -7,6 +7,7 @@ Library modules reach the host via ``_host`` — do not import admin_assistant.
 """
 from __future__ import annotations
 
+import contextvars
 import re
 import threading
 from typing import Any, Iterable, Optional
@@ -44,9 +45,13 @@ PACKS: dict[str, tuple[str, ...]] = {
     ),
     "brain": ("ask_grok",),
     "default": ("list_directory", "get_datetime", "get_news", "ask_grok"),
+    # Fact lookups the fast path usually answers. Bound only when that path misses.
+    "web": ("get_weather", "get_news", "web_search", "read_article"),
+    # Simple turn with no domain match. One local tool, no frontier brain.
+    "minimal": ("get_datetime",),
 }
 
-PACK_ORDER = ("mail", "files", "shell", "knowledge", "brain", "default")
+PACK_ORDER = ("mail", "files", "shell", "knowledge", "brain", "default", "web")
 
 _TOOL_TO_PACK: dict[str, str] = {
     name: pack for pack in PACK_ORDER for name in PACKS[pack]
@@ -76,12 +81,20 @@ _KNOWLEDGE_RE = re.compile(
     re.I,
 )
 _BRAIN_RE = re.compile(r"\b(?:ask_grok|ask grok|\bgrok\b|need_brain|frontier)\b", re.I)
+_WEB_RE = re.compile(
+    r"\b(?:weather|forecast|headlines?|news|web_search|read_article)\b",
+    re.I,
+)
 _SNAKE_RE = re.compile(r"\b([a-z][a-z0-9_]{2,})\b")
 _INVENTED_MAIL = frozenset({
     "gmail_get_unread_email", "gmail_get_latest", "get_unread_email",
 })
 
-_TLS = threading.local()
+# ContextVar so the graph worker (a child thread) sees the pack chosen on this turn.
+_PACK: contextvars.ContextVar[str] = contextvars.ContextVar("primus_turn_pack", default="default")
+_EXTRA: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "primus_turn_extra", default=()
+)
 _REGISTRY_NAMES: Optional[set[str]] = None
 _REGISTRY_LOCK = threading.Lock()
 
@@ -144,8 +157,17 @@ def invented_tool_in_text(text: str, *, allowed: Optional[set[str]] = None) -> O
     return None
 
 
-def select_pack(text: str = "", tools: Optional[Iterable[str]] = None) -> str:
-    """One pack. Receptionist ``tools[]`` wins when it names a known pack tool."""
+def select_pack(
+    text: str = "",
+    tools: Optional[Iterable[str]] = None,
+    *,
+    simple: bool = False,
+) -> str:
+    """One pack. Receptionist ``tools[]`` wins when it names a known pack tool.
+
+    ``simple=True`` falls through to ``minimal`` (``get_datetime`` only) instead of
+    ``default``, which also binds ``ask_grok``.
+    """
     named = [str(t).strip() for t in (tools or []) if str(t).strip()]
     if named:
         # Prefer a concrete work pack over brain/default when mixed.
@@ -154,10 +176,13 @@ def select_pack(text: str = "", tools: Optional[Iterable[str]] = None) -> str:
             p = pack_for_tool(t)
             if p and p not in hits:
                 hits.append(p)
-        for prefer in ("mail", "files", "shell", "knowledge", "brain"):
+        for prefer in ("mail", "files", "shell", "knowledge", "web", "brain"):
             if prefer in hits:
                 return prefer
-        if hits:
+        # Names that only live on default (list_directory, get_datetime, …).
+        # A simple turn keeps reading the utterance so it can still hit web/mail/…
+        # instead of inheriting default's ask_grok.
+        if hits and not simple:
             return hits[0]
 
     blob = text or ""
@@ -165,8 +190,10 @@ def select_pack(text: str = "", tools: Optional[Iterable[str]] = None) -> str:
     if mentioned:
         for t in mentioned:
             p = pack_for_tool(t)
-            if p:
+            if p and p != "default":
                 return p
+            if p == "default" and not simple:
+                return "default"
 
     if _MAIL_RE.search(blob):
         return "mail"
@@ -182,7 +209,88 @@ def select_pack(text: str = "", tools: Optional[Iterable[str]] = None) -> str:
         r"\b(?:code|script|python|function|class|refactor|implement)\b", blob, re.I
     ):
         return "files"
+    if _WEB_RE.search(blob):
+        return "web"
+    if simple:
+        return "minimal"
     return "default"
+
+
+def _pack_from_intent(text: str) -> Optional[str]:
+    """Smallest pack for a classified intent. None keeps the regex selector."""
+    try:
+        from primus.core.intent import current_intent  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return None
+    hint = current_intent()
+    if hint is None:
+        return None
+    direct = {
+        "chat": "minimal",
+        "file_op": "files",
+        "gmail": "mail",
+        "knowledge": "knowledge",
+        "code": "files",
+    }.get(hint.intent)
+    if direct:
+        return direct
+    if hint.intent != "status":
+        return None
+    blob = f"{text or ''} {' '.join(hint.entities)}"
+    if _WEB_RE.search(blob):
+        return "web"
+    if _FILES_RE.search(blob) and not _SHELL_RE.search(blob):
+        return "files"
+    if _SHELL_RE.search(blob):
+        return "shell"
+    return "minimal"
+
+
+def resolve_turn_pack(
+    text: str = "",
+    tools: Optional[Iterable[str]] = None,
+    *,
+    simple: bool = False,
+    need_brain: bool = False,
+    allowed: Optional[set[str]] = None,
+) -> tuple[str, list[str]]:
+    """Pack plus extras for one turn.
+
+    A classified intent picks the smallest domain pack (chat → minimal, file_op →
+    files, gmail → mail, …). ``multi_step`` and ``other`` keep the regex selector.
+    A simple unmatched turn binds ``minimal``, not ``default`` (which includes
+    ``ask_grok``). ``ask_grok`` is added only when ``need_brain`` is set.
+    """
+    named = [str(t).strip() for t in (tools or []) if str(t).strip()]
+    hinted = _pack_from_intent(text)
+    if hinted:
+        pack = hinted
+    else:
+        pack = select_pack(text, tools=named, simple=simple)
+        if simple and pack == "default":
+            pack = "minimal"
+    # On a minimal simple turn, keep a real out-of-pack name (calendar_list_events)
+    # without pulling in the rest of default.
+    scan = text if simple and pack == "minimal" else ""
+    extra, _refuse = extras_from_named(scan, pack, tools=named, allowed=allowed)
+    extra = list(extra)
+    local_only = _local_only()
+    if local_only:
+        extra = [n for n in extra if n != "ask_grok"]
+        if pack == "brain":
+            pack = "minimal"
+    elif need_brain and "ask_grok" not in pack_names(pack) and "ask_grok" not in extra:
+        extra.append("ask_grok")
+    return pack, extra
+
+
+def _local_only() -> bool:
+    try:
+        from primus.core.brain_governor import local_only_enabled  # noqa: PLC0415
+
+        return local_only_enabled()
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def extras_from_named(
@@ -241,10 +349,14 @@ def bind_tools(
         n = str(name).strip()
         if n and n in allow:
             wanted.add(n)
+    if _local_only():
+        wanted.discard("ask_grok")
     bound = [t for t in (registry or []) if getattr(t, "name", "") in wanted]
     # Safety: a bug must not silently pass every schema.
     if registry and len(bound) >= len(registry) and len(registry) > 20:
         wanted = set(PACKS["default"])
+        if _local_only():
+            wanted.discard("ask_grok")
         bound = [t for t in registry if getattr(t, "name", "") in wanted]
     return bound
 
@@ -254,23 +366,22 @@ def bound_names(tools: list) -> list[str]:
 
 
 def set_turn_pack(pack: str, extra: Optional[Iterable[str]] = None) -> None:
-    _TLS.pack = pack if pack in PACKS else "default"
-    _TLS.extra = [str(x).strip() for x in (extra or []) if str(x).strip()]
+    _PACK.set(pack if pack in PACKS else "default")
+    _EXTRA.set(tuple(str(x).strip() for x in (extra or []) if str(x).strip()))
 
 
 def clear_turn_pack() -> None:
-    _TLS.pack = "default"
-    _TLS.extra = []
+    _PACK.set("default")
+    _EXTRA.set(())
 
 
 def current_pack() -> str:
-    pack = getattr(_TLS, "pack", None)
+    pack = _PACK.get()
     return pack if pack in PACKS else "default"
 
 
 def current_extra() -> list[str]:
-    extra = getattr(_TLS, "extra", None)
-    return list(extra) if extra else []
+    return list(_EXTRA.get())
 
 
 def bind_for_text(

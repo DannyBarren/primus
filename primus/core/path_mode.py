@@ -302,12 +302,9 @@ def _count_from_listing(listing: str, kind: str, target: str) -> str:
         if ln.startswith(mark)
     ]
     noun = "folders" if want_dir else "files"
-    if not names:
-        return f"There are no {noun} in `{target}`."
-    if len(names) == 1:
-        noun = noun[:-1]
-    shown = ", ".join(names[:8]) + (f", … and {len(names) - 8} more" if len(names) > 8 else "")
-    return f"There are **{len(names)} {noun}** in `{target}`: {shown}"
+    from primus.core.present import count_sentence  # noqa: PLC0415
+
+    return count_sentence(names, noun, target)
 
 
 def _files_from_listing(listing: str, suffix: str = "") -> list[str]:
@@ -426,7 +423,9 @@ def _run_list(step: str, ctx: _RunCtx, reg: Any) -> str:
         return _listing_inventory("", target)
     ctx.last_listing = listing
     ctx.last_files = _files_from_listing(listing)
-    return _cap_listing_for_chat(listing)
+    from primus.core.present import present_listing  # noqa: PLC0415
+
+    return present_listing(listing, target)
 
 
 def _run_move(step: str, ctx: _RunCtx, reg: Any) -> str:
